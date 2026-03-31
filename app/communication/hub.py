@@ -1,25 +1,14 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
-
-from app.communication.channels import ChannelAdapter
-
-
-class OutboundMessage(BaseModel):
-    content: str
-    reason: str = ""
+from app.communication.channels import OutboundMessage
 
 
 class CommunicationHub:
     def __init__(self) -> None:
-        self.channels: dict[str, ChannelAdapter] = {}
         self.outbox: list[OutboundMessage] = []
 
-    def register_channel(self, adapter: ChannelAdapter) -> None:
-        self.channels[adapter.name] = adapter
-
-    async def queue_outbound_message(self, content: str, reason: str = "") -> None:
-        self.outbox.append(OutboundMessage(content=content, reason=reason))
+    def emit(self, message: OutboundMessage) -> None:
+        self.outbox.append(message)
 
     def drain_outbox(self) -> list[OutboundMessage]:
         drained = list(self.outbox)

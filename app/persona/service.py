@@ -1,34 +1,28 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
-from pydantic import BaseModel, Field
-
-from app.core.types import new_id
-from app.infra.model_client import ModelClient, ModelRole, ModelRouter
-from app.infra.storage import JsonFileStore
+from app.infra.model_client import ModelClient, ModelRouter
+from app.infra.storage import TextFileStore
 from app.persona.models import PersonaProfile
-
-
-class PersonaDraft(BaseModel):
-    summary: str
-    stable_traits: list[str] = Field(default_factory=list)
-    relationship_context: str = ""
-    preferences: list[str] = Field(default_factory=list)
+from app.prompts.store import PromptStore
 
 
 class PersonaService:
     def __init__(
         self,
         profile_path: Path | None = None,
+        soul_path: Path | None = None,
         *,
         model_client: ModelClient | None = None,
         model_router: ModelRouter | None = None,
+        prompt_store: PromptStore | None = None,
     ) -> None:
-        self.store = JsonFileStore(profile_path or Path("memory/persona_profile.json"))
+        del profile_path
+        self.soul_store = TextFileStore(soul_path or Path("memory/soul.md"))
         self.model_client = model_client
         self.model_router = model_router
+        self.prompt_store = prompt_store or PromptStore()
         self._profile = self._load_profile()
 
     @property
@@ -36,6 +30,20 @@ class PersonaService:
         if self._profile is None:
             return None
         return self._profile.model_copy(deep=True)
+
+    @property
+    def soul_markdown(self) -> str:
+        payload = self.soul_store.read()
+        if payload:
+            return payload
+        if self._profile is None:
+            return ""
+        return self._render_default_soul(self._profile.name)
+
+    @property
+    def summary(self) -> str:
+        name = self._profile.name if self._profile is not None else "Amadeus"
+        return self._summarize_soul(self.soul_markdown, fallback_name=name)
 
     def bind_model_runtime(
         self,
@@ -46,145 +54,104 @@ class PersonaService:
         self.model_client = model_client
         self.model_router = model_router
 
+    def replace_soul_markdown(self, payload: str) -> PersonaProfile:
+        cleaned = payload.strip()
+        if not cleaned:
+            raise ValueError("Soul markdown is required.")
+        fallback_name = self._profile.name if self._profile is not None else "Amadeus"
+        profile = self._parse_soul(cleaned, fallback_name=fallback_name)
+        normalized = self._ensure_soul_title(cleaned, profile.name)
+        self._persist_profile(profile, normalized)
+        return profile
+
+    def rename(self, name: str) -> PersonaProfile:
+        if self._profile is None:
+            raise ValueError("Persona not initialized.")
+        cleaned = " ".join(name.split()).strip()
+        if not cleaned:
+            raise ValueError("Persona name is required.")
+        updated_profile = PersonaProfile(name=cleaned)
+        updated_soul = self._rename_soul(self.soul_markdown, cleaned)
+        self._persist_profile(updated_profile, updated_soul)
+        return updated_profile
+
     async def bootstrap_from_text(self, seed_text: str, name: str = "Amadeus") -> PersonaProfile:
-        cleaned_seed = seed_text.strip()
-        draft = await self._extract_persona(cleaned_seed, name=name)
-        profile = PersonaProfile(
-            persona_id=new_id("persona"),
-            name=name,
-            summary=draft.summary,
-            background=cleaned_seed,
-            stable_traits=draft.stable_traits,
-            relationship_context=draft.relationship_context,
-            preferences=draft.preferences,
-        )
-        self._profile = profile
-        self.store.write(profile.model_dump(mode="json"))
+        cleaned_name = " ".join(name.split()).strip() or "Amadeus"
+        soul_md = self._bootstrap_soul(seed_text=seed_text, name=cleaned_name)
+        profile = PersonaProfile(name=cleaned_name)
+        self._persist_profile(profile, soul_md)
         return profile
 
     def _load_profile(self) -> PersonaProfile | None:
-        payload = self.store.read()
-        if payload is None:
+        payload = self.soul_store.read()
+        if not payload:
             return None
-        return PersonaProfile.model_validate(payload)
-
-    async def _extract_persona(self, seed_text: str, *, name: str) -> PersonaDraft:
-        if not seed_text:
-            return PersonaDraft(
-                summary=f"{name} is awaiting a fuller persona definition.",
-                relationship_context=(
-                    f"{name} is still getting to know the user through future conversation."
-                ),
-            )
-
-        structured = await self._extract_with_model(seed_text, name=name)
-        if structured is not None:
-            return structured
-        return self._extract_heuristically(seed_text, name=name)
-
-    async def _extract_with_model(
-        self,
-        seed_text: str,
-        *,
-        name: str,
-    ) -> PersonaDraft | None:
-        if self.model_client is None or self.model_router is None:
-            return None
-
-        route = self.model_router.resolve(ModelRole.MEMORY)
-        if not route.model:
-            return None
-
-        request = self.model_router.build_request(
-            ModelRole.MEMORY,
-            prompt=(
-                f"Character name: {name}\n"
-                "Seed description:\n"
-                f"{seed_text}\n\n"
-                "Extract a stable persona profile for an always-on agent. "
-                "Keep the summary to 2 sentences max, list 3-6 stable traits, "
-                "note the current relationship context with the user, and list 2-5 preferences."
-            ),
-            system_prompt=(
-                "You extract stable character profiles for a role simulation runtime. "
-                "Prefer durable traits over temporary moods."
-            ),
-        )
         try:
-            response = await self.model_client.generate_structured(request, PersonaDraft)
+            return self._parse_soul(payload, fallback_name="Amadeus")
         except Exception:
             return None
 
-        if not isinstance(response.structured, PersonaDraft):
-            return None
-        return response.structured
+    def _persist_profile(self, profile: PersonaProfile, soul_md: str) -> None:
+        self._profile = profile
+        self.soul_store.write(soul_md)
 
-    def _extract_heuristically(self, seed_text: str, *, name: str) -> PersonaDraft:
-        if not seed_text:
-            return PersonaDraft(
-                summary=f"{name} is awaiting a fuller persona definition.",
-                relationship_context=(
-                    f"{name} is still getting to know the user through future conversation."
-                ),
-            )
-
-        sentences = [
-            fragment.strip()
-            for fragment in re.split(r"(?<=[.!?。！？])\s+", seed_text)
-            if fragment.strip()
-        ]
-        summary = " ".join(sentences[:2]) if sentences else seed_text.strip()
-        summary = summary[:280].rstrip()
-
-        collapsed = " ".join(part.strip() for part in seed_text.splitlines() if part.strip())
-        traits = self._extract_traits(collapsed)
-        preferences = self._extract_preferences(collapsed)
-        relationship_context = self._extract_relationship_context(collapsed, name=name)
-        return PersonaDraft(
-            summary=summary or collapsed[:280],
-            stable_traits=traits,
-            relationship_context=relationship_context,
-            preferences=preferences,
+    def _bootstrap_soul(self, *, seed_text: str, name: str) -> str:
+        cleaned_seed = seed_text.strip()
+        body = cleaned_seed or "尚未定义。"
+        return (
+            f"# 灵魂档案：{name}\n\n"
+            "## 核心设定\n"
+            f"{body}\n"
         )
 
-    def _extract_traits(self, text: str) -> list[str]:
-        lowered = text.lower()
-        prefix = re.split(r"\b(?:who|that|with|but|and|喜欢|偏好)\b", lowered, maxsplit=1)[0]
-        prefix = re.sub(r"^(?:an?|the)\s+", "", prefix).strip(" ,.;:()")
-        raw_parts = re.split(r"[,/]| and ", prefix)
-        traits: list[str] = []
-        for part in raw_parts:
-            cleaned = " ".join(part.split()).strip(" ,.;:()")
-            if not cleaned or len(cleaned) > 32:
+    def _render_default_soul(self, name: str) -> str:
+        return self._bootstrap_soul(seed_text="", name=name)
+
+    def _parse_soul(self, payload: str, *, fallback_name: str) -> PersonaProfile:
+        name = self._extract_name(payload) or fallback_name or "Amadeus"
+        return PersonaProfile(name=name)
+
+    def _extract_name(self, payload: str) -> str:
+        for raw_line in payload.splitlines():
+            line = raw_line.strip()
+            if line.startswith("# 灵魂档案："):
+                return line.split("：", 1)[1].strip()
+            if line.startswith("# Soul:"):
+                return line.split(":", 1)[1].strip()
+            if line.startswith("## 名称"):
                 continue
-            if cleaned not in traits:
-                traits.append(cleaned)
-            if len(traits) >= 5:
-                break
-        return traits
+        lines = payload.splitlines()
+        for index, raw_line in enumerate(lines):
+            if raw_line.strip() in {"## 名称", "## Name"}:
+                for candidate in lines[index + 1 :]:
+                    cleaned = candidate.strip()
+                    if cleaned:
+                        return cleaned
+        return ""
 
-    def _extract_preferences(self, text: str) -> list[str]:
-        patterns = [
-            r"\b(?:likes|enjoys|prefers)\s+([^.;,!]+)",
-            r"(?:喜欢|偏好|更喜欢)([^。；，!]+)",
-        ]
-        preferences: list[str] = []
-        for pattern in patterns:
-            for match in re.finditer(pattern, text, flags=re.IGNORECASE):
-                cleaned = " ".join(match.group(1).split()).strip(" ,.;:()")
-                if cleaned and cleaned not in preferences:
-                    preferences.append(cleaned)
-                if len(preferences) >= 5:
-                    return preferences
-        return preferences
+    def _ensure_soul_title(self, payload: str, name: str) -> str:
+        title = f"# 灵魂档案：{name}"
+        lines = payload.splitlines()
+        for index, raw_line in enumerate(lines):
+            stripped = raw_line.strip()
+            if stripped.startswith("# 灵魂档案：") or stripped.startswith("# Soul:"):
+                lines[index] = title
+                return "\n".join(lines).strip() + "\n"
+        return f"{title}\n\n{payload.strip()}\n"
 
-    def _extract_relationship_context(self, text: str, *, name: str) -> str:
-        lowered = text.lower()
-        if any(token in lowered for token in ["friend", "partner", "assistant", "companion"]):
-            return (
-                f"{name} already has an implied relationship frame with the user and should "
-                "maintain it consistently."
-            )
-        if any(token in text for token in ["朋友", "助手", "搭档", "恋人", "同伴"]):
-            return f"{name} already has an implied relationship frame with the user."
-        return f"{name} is still getting to know the user through ongoing conversation."
+    def _rename_soul(self, payload: str, name: str) -> str:
+        if not payload.strip():
+            return self._render_default_soul(name)
+        return self._ensure_soul_title(payload, name)
+
+    def _summarize_soul(self, payload: str, *, fallback_name: str) -> str:
+        for raw_line in payload.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("#"):
+                continue
+            if line.startswith("- "):
+                return line[2:].strip()
+            return line
+        return f"{fallback_name} 的灵魂文档已建立。"

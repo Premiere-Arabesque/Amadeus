@@ -1,1 +1,1 @@
-"""Communication hub and channel adapters."""
+"""Communication primitives."""

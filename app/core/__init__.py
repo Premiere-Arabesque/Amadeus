@@ -1,1 +1,1 @@
-"""Shared domain schemas."""
+"""Core runtime schemas."""

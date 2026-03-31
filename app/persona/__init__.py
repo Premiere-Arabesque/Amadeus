@@ -1,1 +1,1 @@
-"""Persona services and models."""
+"""Persona authoring and persistence."""

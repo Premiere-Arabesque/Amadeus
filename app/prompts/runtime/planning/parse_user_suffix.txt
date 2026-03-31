@@ -1,0 +1,12 @@
+请把上面的自由文本草稿解析成结构化计划。
+
+要求：
+- `day_summary` 用一句简洁自然语言概括全天主线
+- `day_items` 只保留 2-4 条按顺序推进的摘要
+- `current_hour_summary` 用一句话概括当前小时段
+- `hour_items` 只保留 2-3 条属于当前小时段的摘要
+- `steps` 只保留接下来 2-4 个分钟级动作
+- 每个 step 都要有 `title`、`detail`、`minutes`
+- `minutes` 保持在 1-30 之间，并尽量让整段窗口只覆盖接下来 5-15 分钟
+- 如果草稿里没有明确真实工具，就让 `execution_mode=narrative`、`zone_hint=non_real`、`capability=null`、`arguments={}`
+- 只有草稿里明确出现可真实调用的能力时，才补 `capability` 和 `arguments`

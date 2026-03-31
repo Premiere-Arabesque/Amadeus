@@ -9,14 +9,11 @@ from app.core.types import JsonValue, new_id, utc_now
 
 class EventType(StrEnum):
     MESSAGE_RECEIVED = "message_received"
-    MINUTE_TICK = "minute_tick"
-    HOUR_TICK = "hour_tick"
     ACTION_COMPLETED = "action_completed"
-    TOOL_RESULT = "tool_result"
-    TOOL_FAILED = "tool_failed"
-    EMOTION_UPDATED = "emotion_updated"
-    REPLAN_REQUESTED = "replan_requested"
-    OUTBOUND_MESSAGE_REQUESTED = "outbound_message_requested"
+    DAY_START = "day_start"
+    PLAN_REFRESH_REQUESTED = "plan_refresh_requested"
+    SCHEDULE_WAKE = "schedule_wake"
+    SYSTEM_BOOT = "system_boot"
 
 
 class EventSource(StrEnum):

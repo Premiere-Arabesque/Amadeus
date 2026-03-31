@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.infra.settings import MemoryStorageSettings
 from app.memory.service import MemoryService
 from app.persona.service import PersonaService
 
@@ -15,6 +16,17 @@ class InMemoryJsonStore:
         return self.payload
 
     def write(self, payload) -> None:
+        self.payload = payload
+
+
+class InMemoryTextStore:
+    def __init__(self, payload: str | None = None) -> None:
+        self.payload = payload
+
+    def read(self) -> str | None:
+        return self.payload
+
+    def write(self, payload: str) -> None:
         self.payload = payload
 
 
@@ -66,28 +78,32 @@ class MemoryHarness:
 
 @dataclass
 class PersonaHarness:
-    store: InMemoryJsonStore = field(default_factory=InMemoryJsonStore)
+    soul_store: InMemoryTextStore = field(default_factory=InMemoryTextStore)
 
 
 def build_in_memory_memory_service(
     *,
     harness: MemoryHarness | None = None,
-    max_active_entries: int = 20,
-    archive_batch_size: int = 10,
+    active_retention_days: int = 999,
     model_client=None,
     model_router=None,
+    semantic_entry_embedder=None,
+    semantic_query_embedder=None,
 ) -> tuple[MemoryService, MemoryHarness]:
     harness = harness or MemoryHarness()
     service = MemoryService(
-        raw_log_path=Path("memory/tests/raw.jsonl"),
+        raw_log_path=Path("memory/tests/raw"),
         snapshot_path=Path("memory/tests/snapshots.jsonl"),
         active_memory_path=Path("memory/tests/active.jsonl"),
         core_memory_path=Path("memory/tests/core.json"),
         archive_memory_path=Path("memory/tests/archive.jsonl"),
-        max_active_entries=max_active_entries,
-        archive_batch_size=archive_batch_size,
+        storage_settings=MemoryStorageSettings(
+            active_retention_days=active_retention_days,
+        ),
         model_client=model_client,
         model_router=model_router,
+        semantic_entry_embedder=semantic_entry_embedder,
+        semantic_query_embedder=semantic_query_embedder,
     )
     service.raw_store = harness.raw_store
     service.snapshot_store = harness.snapshot_store
@@ -109,10 +125,10 @@ def build_in_memory_persona_service(
 ) -> tuple[PersonaService, PersonaHarness]:
     harness = harness or PersonaHarness()
     service = PersonaService(
-        profile_path=Path("memory/tests/persona.json"),
+        soul_path=Path("memory/tests/soul.md"),
         model_client=model_client,
         model_router=model_router,
     )
-    service.store = harness.store
+    service.soul_store = harness.soul_store
     service._profile = service._load_profile()
     return service, harness

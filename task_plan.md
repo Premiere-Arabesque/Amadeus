@@ -1,74 +1,55 @@
-# Task Plan: Real Role Simulation Runtime
+# Task Plan: Simplify Execution Zones to Real / Non-Real
 
 ## Goal
-
-Replace the remaining role-simulation stubs with real MVP behavior: dialogue should produce actual in-character replies, persona and memory should materially shape runtime behavior, interaction policy should stop being hardcoded, and the updated runtime should be covered by tests that work in this environment.
+Refactor the runtime from the current three-zone execution model to a lighter two-zone model (`real` / `non_real`) in three controlled phases, while keeping the project runnable during the transition.
 
 ## Current Phase
-
-Phase 5
+Phase 2
 
 ## Phases
 
-### Phase 1: Re-read Remaining Stubs
-
-- [x] Re-read `execution`, `interaction`, `persona`, `emotion`, `memory`, and runtime wiring
-- [x] Confirm which layers were still placeholder implementations
-- [x] Decide where model routing should be consumed in MVP
+### Phase 1: Discovery, Mapping, and Compatibility Plan
+- [x] Confirm user intent: collapse three execution zones into two
+- [x] Map current zone-related code paths across runtime, core types, UI, and docs
+- [x] Create file-based plan and findings for the migration
+- [x] Define migration strategy that keeps the project working between phases
 - **Status:** complete
 
-### Phase 2: Runtime Implementation
+### Phase 2: Runtime and Schema Refactor
+- [x] Refactor `execution.py` from explicit three-zone branching to a two-zone model
+- [x] Update shared types and models (`ExecutionZone`, outcomes, step hints, debug payloads)
+- [ ] Keep objective classification programmatic where possible instead of model-self-reporting
+- [x] Preserve traceability for "tool was used" vs "non-real continuation"
+- **Status:** in_progress
 
-- [x] Replace narrative execution with real dialogue generation
-- [x] Replace hardcoded interaction policy with actual decision logic
-- [x] Upgrade persona bootstrap from truncation to structured extraction
-- [x] Upgrade emotion updates from a binary branch to stateful scoring
-- [x] Make memory ingest inbound messages and feed planning/execution context
-- **Status:** complete
-
-### Phase 3: Wiring
-
-- [x] Wire `dialogue / decision / memory` model routes into the runtime services
-- [x] Ensure planning carries enough context for execution to generate grounded replies
-- [x] Keep tool capabilities working while making tool replies conversational
-- **Status:** complete
-
-### Phase 4: Verification
-
-- [x] Add deterministic tests for persona, interaction, dialogue, and memory-aware planning
-- [x] Convert the relevant runtime/API tests away from `tmp_path` to in-memory support so they run here
-- [x] Re-run lint, pytest, and compile verification
-- **Status:** complete
-
-### Phase 5: Delivery
-
-- [x] Update planning logs with the new role-simulation behavior
-- [x] Update runtime documentation for the new dialogue/persona/memory path
-- **Status:** complete
+### Phase 3: UI, Tooling, and Docs Cleanup
+- [ ] Update debug pages and standalone executor lab to reflect the new model
+- [ ] Remove or rewrite remaining three-zone wording in prompts and docs
+- [ ] Verify runtime behavior, debug outputs, and planning/replan compatibility
+- [ ] Summarize remaining cleanup opportunities if any legacy fields remain
+- **Status:** pending
 
 ## Key Questions
-
-1. What changed in dialogue? Narrative and hybrid steps now generate actual reply text instead of returning a generic execution string.
-2. What changed in cognition? Persona extraction, interaction choice, and memory summarization now all have real implementations with model-backed paths plus deterministic fallback.
-3. What changed in testing? The main runtime/API tests now use in-memory storage helpers instead of `tmp_path`, so the suite can pass in this sandbox.
+1. Which current three-zone distinctions are true runtime semantics vs only presentation or prompt wording?
+2. How should "real vs non-real" be represented during migration: replace `ExecutionZone` directly, or introduce a compatibility layer first?
+3. Which code paths must remain objective/programmatic so the executor agent does not become overburdened?
 
 ## Decisions Made
-
 | Decision | Rationale |
 |----------|-----------|
-| Keep model-backed behavior optional, with deterministic fallback | The runtime should work without live API keys, but still consume the configured model routes when available |
-| Treat inbound user messages as active memory unless they are low-signal acknowledgements | This creates continuity without flooding memory with trivial noise |
-| Make URL/search message steps `hybrid` | The tool result and the user-facing reply now happen in the same first action |
-| Replace `tmp_path`-heavy tests with in-memory store harnesses | This removes environment-specific ACL failures and keeps verification local |
+| Use a three-phase migration instead of one big rewrite | Keeps the project runnable and reviewable while large runtime logic changes land |
+| Treat `execution.py` as the main refactor hotspot | Most three-zone branching, fallback, and loop semantics currently live there |
+| Keep the file-based plan as source of truth for this migration | User explicitly asked to use `planning-with-files` and ignore older md contents |
+| Use compatibility parsing for old zone strings while moving shared types to `real` / `non_real` | Prevents old snapshots, prompt outputs, and debug payloads from breaking immediately |
+| Remove explicit Weak Real / Ambiguity runtime branching before cleaning up docs and UI | Reduces semantic complexity at the runtime core first, then presentation can follow |
+| Keep old request enum values in executor-lab temporarily, but map all non-real choices to `non_real` internally | Lets older debug requests keep working during the UI cleanup window |
 
 ## Errors Encountered
-
 | Error | Attempt | Resolution |
 |-------|---------|------------|
-| Sandbox ACLs blocked `tmp_path` and even project-local `--basetemp` cleanup | 1 | Reworked the relevant tests to use in-memory store harnesses instead of filesystem fixtures |
-| Memory retrieval recency bonus initially surfaced unrelated active memories | 1 | Only apply the recency bonus after a real lexical match exists |
+| None yet | 1 | N/A |
 
 ## Notes
-
-- Planning and replan were already real before this slice; this work closed the remaining gap above them.
-- The runtime now behaves like a minimal role simulation rather than a scheduling shell with placeholder text.
+- The user wants a lighter model: `real` if a tool was actually called in that turn, otherwise `non_real`.
+- The user does not want the executor itself to carry unnecessary classification burden.
+- The user prefers staged change over all-at-once rewrite.

@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Amadeus Executor Lab Standalone</title>
+    <link rel="stylesheet" href="/assets/executor-lab.css" />
+  </head>
+  <body>
+    <main class="page-shell">
+      <section class="hero">
+        <p class="eyebrow">Executor Lab</p>
+        <h1>独立 Executor 调试服务</h1>
+        <p class="hero-copy">
+          这个页面运行在独立服务里，只复用项目里的模型、MCP 连接逻辑和工具注册逻辑。
+          Persona 和 Memory 不接入，角色的 soul 与记忆由你当场手填。点击开始后会流式显示双 agent loop 的进度。
+        </p>
+        <div class="hero-actions">
+          <button id="load-defaults" class="ghost" type="button">加载工具列表</button>
+          <button id="run-lab" class="primary" type="button">开始调试</button>
+          <button id="stop-lab" class="ghost danger-ghost" type="button" disabled>停止调试</button>
+        </div>
+      </section>
+
+      <div id="page-message" class="page-message hidden"></div>
+
+      <section class="workspace">
+        <form class="form-panel">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Step</p>
+                <h2>分钟级动作</h2>
+              </div>
+            </div>
+            <div class="field-grid">
+              <label class="field">
+                <span>标题</span>
+                <input id="step-title" type="text" value="刷小红书" />
+              </label>
+              <label class="field">
+                <span>执行区</span>
+                <select id="step-zone">
+                  <option value="auto">自动路由</option>
+                  <option value="real">Real Zone</option>
+                  <option value="non_real">Non-Real Zone</option>
+                </select>
+              </label>
+            </div>
+            <label class="field">
+              <span>细节</span>
+              <textarea id="step-detail" rows="4">打开小红书首页，顺着推荐流看看有什么内容。</textarea>
+            </label>
+            <div class="field-grid">
+              <label class="field">
+                <span>显式 capability</span>
+                <select id="step-capability">
+                  <option value="">自动解析</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>相关事件文本</span>
+                <input id="related-event-text" type="text" placeholder="可选，比如用户刚发来的消息" />
+              </label>
+            </div>
+            <label class="field">
+              <span>arguments JSON</span>
+              <textarea id="step-arguments" rows="4">{}</textarea>
+            </label>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Loop</p>
+                <h2>终止与调试参数</h2>
+              </div>
+            </div>
+            <div class="field-grid field-grid-tight">
+              <label class="field">
+                <span>最大轮次</span>
+                <input id="max-turns" type="number" min="1" max="20" value="6" />
+              </label>
+              <label class="field">
+                <span>Buffer 秒数</span>
+                <input id="buffer-seconds" type="number" min="0" max="600" value="30" />
+              </label>
+              <label class="field">
+                <span>模拟外部中断于第几轮</span>
+                <input id="interrupt-after-turn" type="number" min="1" max="20" placeholder="留空表示不模拟" />
+              </label>
+            </div>
+            <label class="field">
+              <span>下一个分钟级动作开始时间</span>
+              <input id="next-step-scheduled-for" type="datetime-local" />
+            </label>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Roleplay</p>
+                <h2>RoleplayAgentContext 手填参数</h2>
+              </div>
+            </div>
+            <label class="field">
+              <span>名字</span>
+              <input id="roleplay-name" type="text" value="Roleplay Agent" />
+            </label>
+            <label class="field">
+              <span>soul.md / 核心设定</span>
+              <textarea id="roleplay-soul" rows="8" placeholder="手动填 soul.md 相关内容"></textarea>
+            </label>
+            <label class="field">
+              <span>计划上下文</span>
+              <textarea id="roleplay-plan-context" rows="4" placeholder="可手填小时计划、已展开的分钟计划等"></textarea>
+            </label>
+            <label class="field">
+              <span>上下文块</span>
+              <textarea id="roleplay-context-entries" rows="8" placeholder="按自然语言块手填；空行会分隔成多个 ContextEntry。比如：&#10;这几条记忆在你脑海中浮现：&#10;1. 条目1&#10;2. 条目2&#10;&#10;刚刚这个分钟计划发生了这些事：&#10;..."></textarea>
+            </label>
+            <label class="field">
+              <span>额外调试说明</span>
+              <textarea id="roleplay-extra-instructions" rows="4" placeholder="比如：回复更生活化一些，少一点解释。"></textarea>
+            </label>
+          </article>
+        </form>
+
+        <aside class="side-panel">
+          <article class="panel tools-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Tools</p>
+                <h2>当前可用工具</h2>
+              </div>
+            </div>
+            <div id="tool-list" class="stack"></div>
+          </article>
+
+          
+        </aside>
+      </section>
+
+      <section class="results">
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Result</p>
+              <h2>执行结果概览</h2>
+            </div>
+          </div>
+          <div id="result-summary" class="summary-grid">
+            <div class="placeholder-card">点击“开始调试”后，这里会显示停止原因和最终结果。</div>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Turns</p>
+              <h2>双 Agent Loop 记录</h2>
+            </div>
+          </div>
+          <div id="turn-list" class="turn-list">
+            <div class="placeholder-card">流式执行过程中，这里会持续追加每一轮的 scene、result 与 roleplay 回复。</div>
+          </div>
+        </article>
+
+        <div class="result-grid">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Invocations</p>
+                <h2>工具调用</h2>
+              </div>
+            </div>
+            <pre id="tool-invocations" class="code-block">[]</pre>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Trace</p>
+                <h2>Execution Trace</h2>
+              </div>
+            </div>
+            <pre id="execution-trace" class="code-block">[]</pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel stream-panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Stream</p>
+            <h2>流式执行过程</h2>
+          </div>
+        </div>
+        <pre id="stream-log" class="code-block stream-screen">等待开始…</pre>
+      </section>
+    </main>
+
+    <script src="/assets/executor-lab-standalone.js" defer></script>
+  </body>
+</html>

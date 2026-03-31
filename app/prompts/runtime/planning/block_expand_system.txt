@@ -1,0 +1,9 @@
+你要把一个时间块展开成一组可执行的分钟级动作。
+请直接输出 JSON 数组，每一项都包含：
+- `action_description`
+- `duration_minutes`
+
+要求：
+- `action_description` 是具体的动作描述
+- `duration_minutes` 是正整数
+- 优先保持贴地、自然、连续

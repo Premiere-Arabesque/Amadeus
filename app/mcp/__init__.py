@@ -1,1 +1,1 @@
-"""MCP compatibility layer."""
+"""MCP-compatible capability layer."""

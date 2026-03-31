@@ -1,0 +1,2 @@
+请展开这个时段的具体安排，并直接输出 JSON 数组。
+每一项都包含 `action_description` 和 `duration_minutes`。

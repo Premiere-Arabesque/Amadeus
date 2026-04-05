@@ -164,6 +164,3 @@ AGPL-3.0 — 详见 [LICENSE](./LICENSE)
 
 
 
-## License
-
-AGPL-3.0 — see [LICENSE](./LICENSE) for details.

@@ -161,18 +161,14 @@ def test_reset_core_memory_endpoint_keeps_only_soul_derived_fields() -> None:
     )
     client = TestClient(app)
 
-    memory_service.core_memory.today_plan_summary = "Finish today's thread."
-    memory_service.core_memory.recent_events = ["event-a", "event-b"]
-    memory_service.core_memory.today_execution_records = []
+    memory_service.core_memory.soul_md = "Finish today's thread."
     memory_service.core_store.write(memory_service.core_memory.model_dump(mode="json"))
 
     response = client.post("/api/memory/core/reset", params={"limit": 5})
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["core_memory"]["today_plan_summary"] == ""
-    assert payload["core_memory"]["recent_events"] == []
-    assert payload["core_memory"]["today_execution_records"] == []
+    assert payload["core_memory"]["soul_md"] == ""
 
 def test_runtime_debug_endpoint_surfaces_execution_replan_and_tools() -> None:
     memory_service, _ = build_in_memory_memory_service()
@@ -282,9 +278,13 @@ def test_plan_lab_endpoints_support_manual_day_start_and_replan() -> None:
         json={"block_id": target_block_id},
     )
     assert specific_expand.status_code == 200
-    specific_plan = specific_expand.json()["debug"]["current_plan"]
+    specific_debug = specific_expand.json()["debug"]
+    specific_plan = specific_debug["current_plan"]
     assert specific_plan["active_block_id"] == target_block_id
-    assert specific_plan["minute_steps"]
+    if specific_debug["execution_granularity"] == "minute":
+        assert specific_plan["minute_steps"]
+    else:
+        assert specific_plan["minute_steps"] == []
 
     shift_clock = client.post(
         "/api/planner-lab/clock/set",
@@ -294,16 +294,18 @@ def test_plan_lab_endpoints_support_manual_day_start_and_replan() -> None:
 
     expanded = client.post("/api/planner-lab/expand-ready-block", json={})
     assert expanded.status_code == 200
-    expanded_steps = expanded.json()["debug"]["current_plan"]["minute_steps"]
-    assert expanded_steps
-    assert expanded_steps[0]["scheduled_for"].startswith("2026-03-28T21:00:00+08:00")
+    expanded_debug = expanded.json()["debug"]
+    expanded_steps = expanded_debug["current_plan"]["minute_steps"]
+    if expanded_debug["execution_granularity"] == "minute":
+        assert expanded_steps
+        assert expanded_steps[0]["scheduled_for"].startswith("2026-03-28T21:00:00+08:00")
+    else:
+        assert expanded_steps == []
 
     decision = client.post(
         "/api/planner-lab/replan/decide",
         json={
-            "outcome_status": "blocked_failure",
             "outcome_content": "The current block drifted off course.",
-            "plan_exhausted": False,
         },
     )
     assert decision.status_code == 200
@@ -322,7 +324,9 @@ def test_plan_lab_endpoints_support_manual_day_start_and_replan() -> None:
         },
     )
     assert applied.status_code == 200
-    assert applied.json()["debug"]["current_plan"]["minute_steps"]
+    applied_debug = applied.json()["debug"]
+    if applied_debug["execution_granularity"] == "minute":
+        assert applied_debug["current_plan"]["minute_steps"]
 
     debug_response = client.get("/api/planner-lab/debug?limit=5")
     assert debug_response.status_code == 200
@@ -986,7 +990,7 @@ def test_persona_management_front_page_is_removed(tmp_path: Path) -> None:
     assert response.status_code == 404
 
 
-def test_executor_lab_front_page_is_served(tmp_path: Path) -> None:
+def test_workspace_front_page_is_served(tmp_path: Path) -> None:
     registry = PersonaRegistry(
         index_path=tmp_path / "personas" / "index.json",
         workspace_root=tmp_path / "personas",
@@ -995,16 +999,44 @@ def test_executor_lab_front_page_is_served(tmp_path: Path) -> None:
     client = TestClient(app)
 
     root_response = client.get("/")
+    workspace_response = client.get("/front/workspace")
     debug_response = client.get("/front/debug")
     executor_response = client.get("/front/executor-lab")
 
     assert root_response.status_code == 200
+    assert workspace_response.status_code == 200
     assert debug_response.status_code == 200
     assert executor_response.status_code == 200
+    assert "角色工作台" in root_response.text
+    assert "角色工作台" in workspace_response.text
+    assert "/assets/workspace.js" in root_response.text
     assert "Executor Lab" in debug_response.text
     assert "Executor Lab" in executor_response.text
-    assert "/assets/executor-lab.js" in executor_response.text
-    assert "Executor Lab" in root_response.text
+    assert "/assets/executor-lab-standalone.js" in executor_response.text
+
+
+def test_workspace_endpoints_return_integrated_payloads(tmp_path: Path) -> None:
+    registry = PersonaRegistry(
+        index_path=tmp_path / "personas" / "index.json",
+        workspace_root=tmp_path / "personas",
+    )
+    app = create_app(persona_registry=registry)
+    client = TestClient(app)
+
+    workbench_response = client.get("/api/workspace/workbench")
+    chat_response = client.get("/api/workspace/chat")
+
+    assert workbench_response.status_code == 200
+    assert chat_response.status_code == 200
+
+    workbench_payload = workbench_response.json()
+    chat_payload = chat_response.json()
+
+    assert "summary" in workbench_payload
+    assert "current_plan" in workbench_payload
+    assert "plan_items" in workbench_payload
+    assert "entries" in chat_payload
+    assert "roleplay_context_preview" in chat_payload
 
 
 def test_settings_front_page_is_removed(tmp_path: Path) -> None:

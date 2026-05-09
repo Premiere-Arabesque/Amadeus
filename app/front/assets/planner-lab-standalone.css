@@ -211,6 +211,23 @@ body {
   display: grid;
 }
 
+.context-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+  gap: 18px;
+}
+
+.roleplay-context-layout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.memory-preview-list {
+  display: grid;
+  gap: 12px;
+}
+
 .section-head {
   display: flex;
   align-items: end;
@@ -329,6 +346,25 @@ textarea:focus {
   border: 1px solid var(--border);
   color: var(--muted);
   font-size: 13px;
+}
+
+.granularity-banner {
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  line-height: 1.6;
+  font-size: 14px;
+}
+
+.granularity-minute {
+  background: rgba(15, 108, 120, 0.08);
+  color: var(--brand-strong);
+}
+
+.granularity-hour {
+  background: rgba(212, 128, 63, 0.12);
+  color: #84511e;
 }
 
 .plan-layout,
@@ -499,6 +535,8 @@ textarea:focus {
   }
 
   .metric-grid,
+  .context-grid,
+  .roleplay-context-layout,
   .plan-layout,
   .dual-panels,
   .trace-layout,

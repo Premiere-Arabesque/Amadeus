@@ -56,10 +56,6 @@ class PlanState(BaseModel):
     active_block_id: str | None = None
     day_plan_items: list[PlanOutlineItem] = Field(default_factory=list)
     active_day_item_id: str | None = None
-    current_hour_summary: str = ""
-    hour_plan_items: list[PlanOutlineItem] = Field(default_factory=list)
-    active_hour_item_id: str | None = None
-    hour_starts_at: str | None = None
     minute_steps: list[PlanStep] = Field(default_factory=list)
 
 
@@ -69,6 +65,9 @@ class RuntimeState(BaseModel):
     current_action_id: str | None = None
     plan: PlanState = Field(default_factory=PlanState)
     pending_event_ids: list[str] = Field(default_factory=list)
+    interaction_cooldown_until: str | None = None
+    interaction_cooldown_context: str = ""
+    interaction_cooldown_resume_after_completion: bool = False
     last_progress_at: str | None = None
     last_outcome_status: OutcomeStatus | None = None
     last_error: str | None = None

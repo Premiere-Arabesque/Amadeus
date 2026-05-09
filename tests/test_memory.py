@@ -1,12 +1,8 @@
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
-from app.core.events import EventSource, EventType, RuntimeEvent
-from app.core.outcomes import ActionOutcome, OutcomeStatus
-from app.core.state import PlanStep, RuntimeState
-from app.core.types import ExecutionMode, ExecutionZone
 from app.infra.model_client import (
     ModelClient,
     ModelRequest,
@@ -17,43 +13,8 @@ from app.infra.model_client import (
 from app.infra.settings import MemoryRetrievalSettings, ModelRoute, ModelRoutingSettings
 from app.memory.models import ActiveMemoryEntry, RawLogEntry
 from app.memory.retrieval import MemoryRetrievalPipeline
-from app.memory.service import MemoryService
-from app.runtime.planning import PlanningService
+from app.runtime.roleplay_context import RoleplayAgentContext
 from tests.test_support import InMemoryJsonlStore, MemoryHarness, build_in_memory_memory_service
-
-
-class PromptCapturingModelClient(ModelClient):
-    def __init__(self) -> None:
-        self.prompts: list[str] = []
-        self.system_prompts: list[str] = []
-
-    async def generate_text(self, request: ModelRequest) -> TextResponse:
-        return TextResponse(text=request.prompt)
-
-    async def generate_structured(self, request: ModelRequest, schema_type):
-        self.prompts.append(request.prompt)
-        self.system_prompts.append(request.system_prompt)
-        if schema_type.__name__ == "DayPlanDraft":
-            payload = {
-                "items": [
-                    {"time": "08:00-09:30", "label": "接住昨天留下的主线"},
-                    {"time": "09:30-12:00", "label": "先把早上的状态稳定下来"},
-                ]
-            }
-        elif schema_type.__name__ == "MinuteActionPlanDraft":
-            payload = {
-                "items": [
-                    {
-                        "action_description": "检查昨天留下的上下文",
-                        "duration_minutes": 5,
-                    }
-                ]
-            }
-        else:
-            payload = {}
-        return StructuredResponse(
-            structured=schema_type.model_validate(payload)
-        )
 
 
 class RerankCapturingModelClient(ModelClient):
@@ -76,19 +37,9 @@ class RerankCapturingModelClient(ModelClient):
         return StructuredResponse(structured=schema_type.model_validate({}))
 
 
-def configured_planning_router() -> ModelRouter:
-    return ModelRouter(
-        settings=ModelRoutingSettings(
-            decision=ModelRoute(
-                provider="custom",
-                model="decision-x",
-                base_url="https://mock/decision",
-            )
-        )
-    )
-
-
 def test_raw_log_store_uses_date_named_folders(tmp_path: Path) -> None:
+    from app.memory.service import MemoryService
+
     service = MemoryService(raw_log_path=tmp_path / "raw_log")
 
     service._append_raw(
@@ -111,37 +62,20 @@ def test_raw_log_store_uses_date_named_folders(tmp_path: Path) -> None:
     assert (tmp_path / "raw_log" / "2026-03-26" / "entries.jsonl").exists()
     assert (tmp_path / "raw_log" / "2026-03-27" / "entries.jsonl").exists()
 
-    reloaded = MemoryService(raw_log_path=tmp_path / "raw_log")
-    assert [entry.payload["label"] for entry in reloaded.raw_entries] == ["first", "second"]
 
+def test_core_prompt_context_defaults_to_soul_md_only() -> None:
+    from app.memory.service import MemoryService
 
-@pytest.mark.anyio
-async def test_planning_model_trace_is_written_to_raw_log() -> None:
-    memory_service, _ = build_in_memory_memory_service()
-    model_client = PromptCapturingModelClient()
-    planning = PlanningService(
-        model_client=model_client,
-        model_router=configured_planning_router(),
-        memory_service=memory_service,
-    )
+    service = MemoryService()
+    service.core_memory.soul_md = "I am Kurisu."
 
-    plan = await planning.plan_next_window(
-        state=RuntimeState(),
-        trigger_event=RuntimeEvent(
-            event_type=EventType.DAY_START,
-            source=EventSource.SYSTEM,
-        ),
-        now=datetime(2026, 3, 24, 0, 5, tzinfo=UTC),
-    )
+    prompt = service.core_prompt_context(state=None, execution_limit=4)
 
-    planning_entries = [entry for entry in memory_service.raw_entries if entry.kind == "planning"]
-    assert planning_entries
-    latest = planning_entries[-1]
-    assert latest.payload["strategy"] == "model"
-    assert latest.payload["prompt"]
-    assert latest.payload["system_prompt"]
-    assert latest.payload["structured_output"][0]["label"] == "接住昨天留下的主线"
-    assert latest.payload["plan_state"]["day_summary"] == plan.day_summary
+    assert "soul.md:" in prompt
+    assert "I am Kurisu." in prompt
+    assert "长期稳定事实" not in prompt
+    assert "长期关系结论" not in prompt
+    assert "长期重要结论" not in prompt
 
 
 @pytest.mark.anyio
@@ -239,6 +173,169 @@ async def test_memory_service_uses_model_reranker_on_deduped_candidates() -> Non
     assert '"semantic"' in prompt
 
 
+@pytest.mark.anyio
+async def test_retrieve_memories_dedupes_duplicate_contents_before_returning() -> None:
+    memory_service, _ = build_in_memory_memory_service(
+        harness=MemoryHarness(
+            active_store=InMemoryJsonlStore(
+                [
+                    ActiveMemoryEntry(
+                        entry_id="mem_a",
+                        content="deadline tomorrow for the current thread",
+                        source="interaction",
+                        semantic_embedding=[1.0, 0.0],
+                    ).model_dump(mode="json"),
+                    ActiveMemoryEntry(
+                        entry_id="mem_b",
+                        content="deadline tomorrow for the current thread",
+                        source="interaction",
+                        semantic_embedding=[1.0, 0.0],
+                    ).model_dump(mode="json"),
+                    ActiveMemoryEntry(
+                        entry_id="mem_c",
+                        content="current thread handoff details for tomorrow",
+                        source="interaction",
+                        semantic_embedding=[1.0, 0.0],
+                    ).model_dump(mode="json"),
+                ]
+            )
+        ),
+        semantic_query_embedder=lambda _: [1.0, 0.0],
+    )
+
+    memories = await memory_service.retrieve_memories(
+        query_text="deadline current thread",
+        top_k=3,
+        reranker_enabled=False,
+    )
+
+    assert memories == [
+        "deadline tomorrow for the current thread",
+        "current thread handoff details for tomorrow",
+    ]
+
+
+@pytest.mark.anyio
+async def test_retrieve_and_inject_memories_appends_roleplay_context_entry() -> None:
+    memory_service, _ = build_in_memory_memory_service(
+        harness=MemoryHarness(
+            active_store=InMemoryJsonlStore(
+                [
+                    ActiveMemoryEntry(
+                        entry_id="mem_a",
+                        content="deadline tomorrow for the current thread",
+                        source="interaction",
+                        semantic_embedding=[1.0, 0.0],
+                    ).model_dump(mode="json"),
+                    ActiveMemoryEntry(
+                        entry_id="mem_b",
+                        content="current thread handoff details for tomorrow",
+                        source="interaction",
+                        semantic_embedding=[1.0, 0.0],
+                    ).model_dump(mode="json"),
+                ]
+            )
+        ),
+        semantic_query_embedder=lambda _: [1.0, 0.0],
+    )
+    context = RoleplayAgentContext()
+
+    entry = await memory_service.retrieve_and_inject_memories(
+        query_text="deadline current thread",
+        context=context,
+        roleplay_name="牧濑红莉栖",
+        source="execution_scene",
+        reranker_enabled=False,
+        metadata={"turn": 1},
+    )
+
+    assert entry is not None
+    assert context.entries[-1] == entry
+    assert entry.kind == "retrieved_memory"
+    assert "你想起了一些事情：" in entry.content
+    assert "- deadline tomorrow for the current thread" in entry.content
+    assert "- current thread handoff details for tomorrow" in entry.content
+    assert entry.metadata["source"] == "execution_scene"
+    assert entry.metadata["query_text"] == "deadline current thread"
+    assert entry.metadata["turn"] == 1
+
+
+@pytest.mark.anyio
+async def test_retrieve_and_inject_interaction_memories_prefers_same_partner() -> None:
+    memory_service, _ = build_in_memory_memory_service(
+        harness=MemoryHarness(
+            active_store=InMemoryJsonlStore(
+                [
+                    ActiveMemoryEntry(
+                        entry_id="mem_mayuri",
+                        content="Mayuri mentioned the urgent banana experiment issue yesterday.",
+                        source="interaction",
+                        interaction_partner="Mayuri",
+                        semantic_embedding=[1.0, 0.0],
+                    ).model_dump(mode="json"),
+                    ActiveMemoryEntry(
+                        entry_id="mem_luka",
+                        content="Luka asked for a paper summary about the same topic.",
+                        source="interaction",
+                        interaction_partner="Luka",
+                        semantic_embedding=[1.0, 0.0],
+                    ).model_dump(mode="json"),
+                ]
+            )
+        ),
+        semantic_query_embedder=lambda _: [1.0, 0.0],
+    )
+    context = RoleplayAgentContext()
+
+    entry = await memory_service.retrieve_and_inject_interaction_memories(
+        query_text="Mayuri said the banana issue is urgent",
+        context=context,
+        roleplay_name="牧濑红莉栖",
+        interaction_partner="Mayuri",
+        reranker_enabled=False,
+    )
+
+    assert entry is not None
+    assert "Mayuri mentioned the urgent banana experiment issue yesterday." in entry.content
+    assert "Luka asked for a paper summary" not in entry.content
+    assert entry.metadata["interaction_partner"] == "Mayuri"
+    assert entry.metadata["retrieval_scope"] == "partner_only"
+
+
+@pytest.mark.anyio
+async def test_retrieve_and_inject_interaction_memories_can_fallback_globally() -> None:
+    memory_service, _ = build_in_memory_memory_service(
+        harness=MemoryHarness(
+            active_store=InMemoryJsonlStore(
+                [
+                    ActiveMemoryEntry(
+                        entry_id="mem_global",
+                        content="Someone recently mentioned a very urgent deadline around the current thread.",
+                        source="interaction",
+                        interaction_partner="Luka",
+                        semantic_embedding=[1.0, 0.0],
+                    ).model_dump(mode="json"),
+                ]
+            )
+        ),
+        semantic_query_embedder=lambda _: [1.0, 0.0],
+    )
+    context = RoleplayAgentContext()
+
+    entry = await memory_service.retrieve_and_inject_interaction_memories(
+        query_text="The user says this is urgent",
+        context=context,
+        roleplay_name="牧濑红莉栖",
+        interaction_partner="Mayuri",
+        reranker_enabled=False,
+    )
+
+    assert entry is not None
+    assert "Someone recently mentioned a very urgent deadline around the current thread." in entry.content
+    assert entry.metadata["interaction_partner"] == "Mayuri"
+    assert entry.metadata["retrieval_scope"] == "global_fallback"
+
+
 def test_active_memory_uses_time_window_and_rolls_stale_entries_to_archive() -> None:
     memory_service, _ = build_in_memory_memory_service(
         harness=MemoryHarness(
@@ -267,99 +364,72 @@ def test_active_memory_uses_time_window_and_rolls_stale_entries_to_archive() -> 
     assert [entry.content for entry in archive_entries] == ["stale hello amadeus note"]
 
 
-def test_core_memory_stores_soul_markdown_and_day_scoped_execution_records() -> None:
+def test_roleplay_context_persists_in_separate_store() -> None:
+    memory_service, harness = build_in_memory_memory_service()
+    persisted = RoleplayAgentContext(
+        soul_md="Kurisu soul",
+        plan_context="09:00-12:00 Study",
+    )
+    persisted.add_execution_record(
+        roleplay="去图书馆",
+        scene="你背着包走出门。",
+        result="你已经在去图书馆的路上。",
+    )
+
+    memory_service.save_roleplay_agent_context(persisted)
+
+    restarted_memory_service, _ = build_in_memory_memory_service(harness=harness)
+    reloaded = restarted_memory_service.get_persisted_roleplay_agent_context()
+
+    assert reloaded.soul_md == "Kurisu soul"
+    assert reloaded.plan_context == "09:00-12:00 Study"
+    assert len(reloaded.entries) == 1
+    assert reloaded.entries[0].kind == "execution_record"
+    assert "去图书馆" in reloaded.entries[0].content
+
+
+def test_roleplay_context_rotation_moves_entries_to_previous_day_bucket() -> None:
     memory_service, _ = build_in_memory_memory_service()
-    memory_service.update_persona_context(
-        soul_md="# 灵魂档案：Kurisu\n\n## 核心设定\nA careful researcher.",
+    context = RoleplayAgentContext(
+        context_date="2026-04-03",
+        soul_md="Kurisu soul",
+        plan_context="19:00-21:00 放松",
     )
-    memory_service.update_plan_context(
-        plan_summary="Keep the current research thread coherent.",
-        plan_date="2026-03-26",
+    context.add_execution_record(
+        roleplay="刷小红书",
+        scene="你躺在床上滑动推荐流。",
+        result="你看到了几条穿搭和咖啡店帖子。",
     )
+    memory_service.save_roleplay_agent_context(context)
 
-    step = PlanStep(
-        title="Check the carry-over context",
-        detail="Review yesterday's notes before continuing.",
-        completed_at="2026-03-26T09:05:00+00:00",
-    )
-    outcome = ActionOutcome(
-        action_id=step.step_id,
-        status=OutcomeStatus.SUCCESS,
-        mode=ExecutionMode.NARRATIVE,
-        source=ExecutionZone.WEAK_REAL,
-        content="Reviewed the notes and found the next clean handoff.",
-    )
-    memory_service.record_outcome(
-        step,
-        outcome,
-        memory_content="Checked the carry-over context and found the next clean handoff.",
-    )
+    rotated = memory_service.rotate_roleplay_agent_context_for_day(target_date="2026-04-04")
 
-    assert memory_service.core_memory.soul_md.startswith("# 灵魂档案：Kurisu")
-    assert memory_service.core_memory.core_date == "2026-03-26"
-    assert len(memory_service.core_memory.today_execution_records) == 1
-    assert (
-        memory_service.core_memory.today_execution_records[0].content
-        == "Checked the carry-over context and found the next clean handoff."
-    )
-    assert memory_service.core_memory.recent_events == [
-        "Checked the carry-over context and found the next clean handoff."
-    ]
-
-    memory_service.update_plan_context(
-        plan_summary="Start the next day from a clean slate.",
-        plan_date="2026-03-27",
-    )
-
-    assert memory_service.core_memory.core_date == "2026-03-27"
-    assert memory_service.core_memory.today_plan_summary == "Start the next day from a clean slate."
-    assert memory_service.core_memory.today_execution_records == []
-    assert memory_service.core_memory.recent_events == []
+    assert rotated.context_date == "2026-04-04"
+    assert rotated.entries == []
+    assert rotated.plan_context == ""
+    assert rotated.previous_context_date == "2026-04-03"
+    assert len(rotated.previous_entries) == 1
+    assert "刷小红书" in rotated.previous_entries[0].content
 
 
-@pytest.mark.anyio
-async def test_planning_prompt_uses_core_memory_shape() -> None:
+def test_day_start_memory_context_prefers_previous_roleplay_context_entries() -> None:
     memory_service, _ = build_in_memory_memory_service()
-    memory_service.update_persona_context(
-        soul_md="# 灵魂档案：Kurisu\n\n## 核心设定\nA careful researcher.",
+    context = RoleplayAgentContext(
+        context_date="2026-04-03",
+        soul_md="Kurisu soul",
     )
-    memory_service.update_plan_context(
-        plan_summary="Keep the current thread coherent.",
-        plan_date="2026-03-24",
+    context.add_execution_record(
+        roleplay="刷小红书",
+        scene="你躺在床上滑动推荐流。",
+        result="你看到了几条穿搭和咖啡店帖子。",
     )
-    memory_service.record_outcome(
-        PlanStep(
-            title="Wrap the last block",
-            detail="Leave a clean note for tomorrow.",
-            completed_at="2026-03-24T00:02:00+00:00",
-        ),
-        ActionOutcome(
-            action_id="step_wrap",
-            status=OutcomeStatus.SUCCESS,
-            mode=ExecutionMode.NARRATIVE,
-            source=ExecutionZone.WEAK_REAL,
-            content="Wrapped the last block and left a clean note.",
-        ),
-        memory_content="Wrapped the last block and left a clean note.",
-    )
-    model_client = PromptCapturingModelClient()
-    planning = PlanningService(
-        model_client=model_client,
-        model_router=configured_planning_router(),
-        memory_service=memory_service,
+    memory_service.save_roleplay_agent_context(context)
+    memory_service.rotate_roleplay_agent_context_for_day(target_date="2026-04-04")
+
+    memories = memory_service.day_start_memory_context(
+        now=datetime.fromisoformat("2026-04-04T00:00:00+00:00"),
+        limit=3,
     )
 
-    await planning.plan_next_window(
-        state=RuntimeState(),
-        trigger_event=RuntimeEvent(
-            event_type=EventType.DAY_START,
-            source=EventSource.SYSTEM,
-        ),
-        now=datetime(2026, 3, 24, 9, 0, tzinfo=UTC),
-    )
-
-    prompt = model_client.prompts[0]
-
-    assert "# 灵魂档案：Kurisu" in model_client.system_prompts[0]
-    assert "Wrapped the last block and left a clean note." in prompt
-    assert "昨天发生了这些事情：" in prompt
+    assert memories
+    assert "刷小红书" in memories[-1]

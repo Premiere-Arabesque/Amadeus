@@ -19,6 +19,7 @@ from app.infra.env import load_project_env
 from app.infra.model_client import ModelRouter, PydanticAIModelClient
 from app.infra.settings import ExecutionSettings, MCPSettings, ModelRoutingSettings
 from app.prompts.store import PromptStore
+from app.runtime.contact_book import ContactBook
 from app.runtime.execution import ExecutionService
 from app.runtime.roleplay_agent import ModelRoleplayAgent
 from app.tool.internal_provider import InternalProvider
@@ -35,7 +36,8 @@ def create_app() -> FastAPI:
     model_client = PydanticAIModelClient()
     prompt_store = PromptStore()
     tool_registry = ToolRegistry()
-    InternalProvider().register_tools(tool_registry)
+    contact_book = ContactBook()
+    InternalProvider(contact_book=contact_book).register_tools(tool_registry)
     mcp_provider = MCPProvider(servers=mcp_settings.servers)
     front_root = Path(__file__).resolve().parent / "front"
 
@@ -90,6 +92,7 @@ def create_app() -> FastAPI:
             execution_service=execution_service,
             memory_service=None,
             state=_runtime_state_from_request(request),
+            contact_book=contact_book,
         )
 
         async def event_stream():
@@ -124,6 +127,7 @@ def create_app() -> FastAPI:
             execution_service=execution_service,
             memory_service=None,
             state=_runtime_state_from_request(request),
+            contact_book=contact_book,
         )
         return await runner.run(request)
 

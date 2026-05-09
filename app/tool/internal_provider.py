@@ -9,7 +9,14 @@ import httpx
 
 from app.core.outcomes import OutcomeStatus
 from app.core.types import JsonValue
-from app.tool.models import ActionResult, ToolSourceType, ToolSpec
+from app.runtime.contact_book import ContactBook
+from app.tool.models import (
+    ActionResult,
+    ToolCollectionSpec,
+    ToolCollectionType,
+    ToolSourceType,
+    ToolSpec,
+)
 from app.tool.registry import ToolRegistry
 
 
@@ -470,36 +477,85 @@ class SearchWebTool:
             return await client.get(self.html_fallback_endpoint, **request_options)
 
 
+class ListContactsTool:
+    def __init__(self, contact_book: ContactBook | None = None) -> None:
+        self.contact_book = contact_book or ContactBook()
+
+    async def execute(self, arguments: dict[str, JsonValue]) -> ActionResult:
+        del arguments
+        contacts = self.contact_book.list_contacts()
+        if not contacts:
+            return ActionResult(
+                status=OutcomeStatus.SUCCESS,
+                summary="当前没有已注册的可联系对象。",
+                raw={"contacts": []},
+            )
+
+        summary_lines = ["当前已注册的可联系对象："]
+        for contact in contacts:
+            summary_lines.append(f"- {contact.name}（{contact.channel}）")
+        return ActionResult(
+            status=OutcomeStatus.SUCCESS,
+            summary="\n".join(summary_lines),
+            raw={"contacts": [contact.model_dump(mode="json") for contact in contacts]},
+        )
+
+
 class InternalProvider:
     def __init__(
         self,
         *,
         read_url_http_client: httpx.AsyncClient | None = None,
         search_web_http_client: httpx.AsyncClient | None = None,
+        contact_book: ContactBook | None = None,
     ) -> None:
         self.read_url_tool = ReadUrlTool(http_client=read_url_http_client)
         self.search_web_tool = SearchWebTool(http_client=search_web_http_client)
+        self.list_contacts_tool = ListContactsTool(contact_book=contact_book)
 
     def register_tools(self, registry: ToolRegistry) -> ToolRegistry:
-        registry.register(
-            ToolSpec(
-                name="read_url",
-                description="Fetch a URL and extract readable text content.",
-                required_arguments=["url"],
+        registry.register_collection(
+            ToolCollectionSpec(
+                collection_id="internal:builtins",
+                name="builtins",
+                description="Built-in local tools provided by Amadeus.",
+                collection_type=ToolCollectionType.TOOLSET,
                 source_type=ToolSourceType.INTERNAL,
-                source_id="internal:read_url",
+                source_id="internal:builtins",
+                metadata={"provider": "internal"},
             ),
-            self.read_url_tool.execute,
-        )
-        registry.register(
-            ToolSpec(
-                name="search_web",
-                description="Search for external information and return structured results.",
-                required_arguments=["query"],
-                source_type=ToolSourceType.INTERNAL,
-                source_id="internal:search_web",
-            ),
-            self.search_web_tool.execute,
+            [
+                (
+                    ToolSpec(
+                        name="read_url",
+                        description="Fetch a URL and extract readable text content.",
+                        required_arguments=["url"],
+                        source_type=ToolSourceType.INTERNAL,
+                        source_id="internal:read_url",
+                    ),
+                    self.read_url_tool.execute,
+                ),
+                (
+                    ToolSpec(
+                        name="search_web",
+                        description="Search for external information and return structured results.",
+                        required_arguments=["query"],
+                        source_type=ToolSourceType.INTERNAL,
+                        source_id="internal:search_web",
+                    ),
+                    self.search_web_tool.execute,
+                ),
+                (
+                    ToolSpec(
+                        name="list_contacts",
+                        description="List registered contacts that the role can proactively message.",
+                        required_arguments=[],
+                        source_type=ToolSourceType.INTERNAL,
+                        source_id="internal:list_contacts",
+                    ),
+                    self.list_contacts_tool.execute,
+                ),
+            ],
         )
         return registry
 

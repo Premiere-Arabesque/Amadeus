@@ -26,6 +26,7 @@ from app.prompts.store import PromptStore
 from app.runtime.clock import AdjustableClock
 from app.runtime.inspection import RuntimeStateSnapshot, build_runtime_snapshot
 from app.runtime.orchestrator import RuntimeOrchestrator
+from app.runtime.roleplay_context import RoleplayAgentContext
 
 _PLANLAB_ROOT = Path("memory/planlab")
 
@@ -34,6 +35,9 @@ class PlannerLabDebugResponse(BaseModel):
     summary: RuntimeStateSnapshot
     current_plan: PlanState
     core_memory: CoreMemory
+    roleplay_context: RoleplayAgentContext
+    execution_granularity: str = "minute"
+    day_start_memory_preview: list[str] = Field(default_factory=list)
     planning_entries: list[RawLogEntry] = Field(default_factory=list)
     replan_entries: list[RawLogEntry] = Field(default_factory=list)
     model_entries: list[RawLogEntry] = Field(default_factory=list)
@@ -73,10 +77,8 @@ class PlannerLabExpandSpecificBlockRequest(PlannerLabManualContextRequest):
 
 
 class PlannerLabReplanDecisionRequest(PlannerLabManualContextRequest):
-    outcome_status: OutcomeStatus = OutcomeStatus.SUCCESS
     outcome_content: str = Field(min_length=1)
     event_text: str = ""
-    plan_exhausted: bool | None = None
     execution_mode: ExecutionMode = ExecutionMode.NARRATIVE
     execution_zone: ExecutionZone = ExecutionZone.NON_REAL
 
@@ -85,7 +87,6 @@ class PlannerLabApplyReplanRequest(PlannerLabManualContextRequest):
     kind: ReplanKind
     reason: str = ""
     event_text: str = ""
-    outcome_status: OutcomeStatus = OutcomeStatus.SUCCESS
     outcome_content: str = "Manual planner-lab replan."
     execution_mode: ExecutionMode = ExecutionMode.NARRATIVE
     execution_zone: ExecutionZone = ExecutionZone.NON_REAL
@@ -123,6 +124,7 @@ def create_app() -> FastAPI:
             snapshot_path=_PLANLAB_ROOT / "snapshots.jsonl",
             active_memory_path=_PLANLAB_ROOT / "active_memory.jsonl",
             core_memory_path=_PLANLAB_ROOT / "core_memory.json",
+            roleplay_context_path=_PLANLAB_ROOT / "roleplay_context.json",
             archive_memory_path=_PLANLAB_ROOT / "archive_memory.jsonl",
             model_client=model_client,
             model_router=model_router,
@@ -175,6 +177,16 @@ def create_app() -> FastAPI:
             ),
             current_plan=session.orchestrator.state.plan,
             core_memory=session.memory_service.core_memory,
+            roleplay_context=session.memory_service.get_persisted_roleplay_agent_context(),
+            execution_granularity=getattr(
+                getattr(session.orchestrator.services.planning, "execution_granularity", None),
+                "value",
+                "minute",
+            ),
+            day_start_memory_preview=session.memory_service.day_start_memory_context(
+                now=session.orchestrator.now(),
+                limit=6,
+            ),
             planning_entries=_recent_raw_entries_by_kind(
                 session.memory_service,
                 kind="planning",
@@ -243,6 +255,18 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="Invalid ISO 8601 datetime.") from exc
         session.orchestrator.set_time(target)
+        sync_plan = getattr(session.orchestrator.services.planning, "sync_plan_to_time", None)
+        if callable(sync_plan):
+            refreshed = await sync_plan(
+                session.orchestrator.state,
+                now=target,
+            )
+            session.orchestrator.state.plan = refreshed
+            session.memory_service.update_plan_context(
+                day_blocks=refreshed.day_blocks,
+                plan_date=refreshed.plan_date,
+            )
+            await session.memory_service.save_snapshot(session.orchestrator.state)
         return PlannerLabActionResponse(debug=_debug_payload(session, limit=20))
 
     @app.post("/api/planner-lab/day-start", response_model=PlannerLabActionResponse)
@@ -289,10 +313,6 @@ def create_app() -> FastAPI:
 
         state_for_expand = session.orchestrator.state.model_copy(deep=True)
         state_for_expand.plan.minute_steps = []
-        state_for_expand.plan.current_hour_summary = ""
-        state_for_expand.plan.hour_plan_items = []
-        state_for_expand.plan.active_hour_item_id = None
-        state_for_expand.plan.hour_starts_at = None
 
         event_payload: dict[str, object] = {}
         if request.reason.strip():
@@ -384,34 +404,21 @@ def create_app() -> FastAPI:
         )
         outcome = ActionOutcome(
             action_id=session.orchestrator.state.current_action_id or "planner_lab_action",
-            status=request.outcome_status,
+            status=OutcomeStatus.SUCCESS,
             mode=request.execution_mode,
             source=request.execution_zone,
             content=request.outcome_content,
-        )
-        plan_exhausted = (
-            request.plan_exhausted
-            if request.plan_exhausted is not None
-            else (
-                bool(session.orchestrator.state.plan.minute_steps)
-                and all(
-                    step.status == "complete"
-                    for step in session.orchestrator.state.plan.minute_steps
-                )
-            )
         )
         decision = await session.orchestrator.services.replan.decide(
             now=now,
             state=session.orchestrator.state,
             event=event,
             outcome=outcome,
-            plan_exhausted=plan_exhausted,
         )
         session.memory_service.record_replan_decision(
             decision,
             event=event,
             outcome=outcome,
-            plan_exhausted=plan_exhausted,
         )
         return PlannerLabDecisionResponse(
             decision=decision,
@@ -438,7 +445,7 @@ def create_app() -> FastAPI:
         )
         outcome = ActionOutcome(
             action_id=session.orchestrator.state.current_action_id or "planner_lab_action",
-            status=request.outcome_status,
+            status=OutcomeStatus.SUCCESS,
             mode=request.execution_mode,
             source=request.execution_zone,
             content=request.outcome_content,
@@ -464,7 +471,6 @@ def create_app() -> FastAPI:
             ),
             event=event,
             outcome=outcome,
-            plan_exhausted=False,
         )
         await session.memory_service.save_snapshot(session.orchestrator.state)
         return PlannerLabActionResponse(debug=_debug_payload(session, limit=20))
@@ -512,10 +518,9 @@ def _apply_manual_context(
         for item in request.memories
         if str(item).strip()
     ]
-    session.memory_service.core_memory.recent_events = cleaned_memories
-    touch = getattr(session.memory_service, "_touch_core_memory", None)
-    if callable(touch):
-        touch()
+    setter = getattr(session.memory_service, "set_manual_context_memories", None)
+    if callable(setter):
+        setter(cleaned_memories)
 
 
 app = create_app()

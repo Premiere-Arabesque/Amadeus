@@ -1,26 +1,34 @@
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
 from app.communication.hub import CommunicationHub
 from app.core.events import EventSource, EventType, RuntimeEvent
-from app.core.outcomes import ActionOutcome, OutcomeStatus, ReplanDecision, ReplanKind
-from app.core.state import PlanState, PlanStep, RuntimeState
-from app.core.types import ExecutionMode, ExecutionZone
+from app.core.outcomes import (
+    ActionOutcome,
+    ExecutionTraceEntry,
+    OutcomeStatus,
+    ReplanDecision,
+    ReplanKind,
+    ToolInvocation,
+)
+from app.core.state import DayPlanBlock, PlanState, PlanStep, RuntimeState
+from app.core.types import ExecutionGranularity, ExecutionMode, ExecutionZone
 from app.front.executor_lab import (
     ExecutorLabDefaultsResponse,
     ExecutorLabRequest,
     ExecutorLabResponse,
     ExecutorLabRunner,
-    executor_lab_defaults,
+    empty_executor_lab_defaults,
 )
 from app.infra.embeddings import build_semantic_embedder
 from app.infra.env import load_project_env, project_env_path, sync_process_env, update_project_env
@@ -49,13 +57,14 @@ from app.persona.registry import PersonaCard, PersonaRegistry, PersonaWorkspace
 from app.persona.service import PersonaService
 from app.prompts.store import PromptStore
 from app.runtime.clock import AdjustableClock, RuntimeClock
+from app.runtime.contact_book import ContactBook
 from app.runtime.execution import ExecutionService
 from app.runtime.inspection import (
     MCPServerStatusSnapshot,
     RuntimeStateSnapshot,
     build_runtime_snapshot,
 )
-from app.runtime.interaction import InteractionPolicy
+from app.runtime.interaction import InteractionService
 from app.runtime.orchestrator import OrchestratorServices, RuntimeOrchestrator
 from app.runtime.planning import PlanningService
 from app.runtime.replan import ReplanService
@@ -171,9 +180,7 @@ class RuntimeDebugReplanResponse(BaseModel):
     recorded_at: str
     decision: ReplanDecision
     event_type: str = "none"
-    outcome_status: str = ""
     outcome_summary: str = ""
-    plan_exhausted: bool = False
 
 
 class RuntimeDebugErrorResponse(BaseModel):
@@ -214,11 +221,9 @@ class PlanLabReplanDecisionRequest(BaseModel):
     persona_name: str = "Amadeus"
     soul_md: str = ""
     memories: list[str] = Field(default_factory=list)
-    outcome_status: OutcomeStatus = OutcomeStatus.SUCCESS
     outcome_content: str = Field(min_length=1)
     event_type: EventType = EventType.ACTION_COMPLETED
     event_text: str = ""
-    plan_exhausted: bool | None = None
     execution_mode: ExecutionMode = ExecutionMode.NARRATIVE
     execution_zone: ExecutionZone = ExecutionZone.NON_REAL
 
@@ -235,7 +240,6 @@ class PlanLabApplyReplanRequest(BaseModel):
     kind: ReplanKind
     reason: str = ""
     event_text: str = ""
-    outcome_status: OutcomeStatus = OutcomeStatus.SUCCESS
     outcome_content: str = "Manual plan-lab replan."
     execution_mode: ExecutionMode = ExecutionMode.NARRATIVE
     execution_zone: ExecutionZone = ExecutionZone.NON_REAL
@@ -399,6 +403,61 @@ class PersonaActivationResponse(BaseModel):
     card: PersonaCard
     state: RuntimeStateSnapshot
     core_memory: CoreMemory
+
+
+class WorkspaceExecutionRecordResponse(BaseModel):
+    raw_entry_id: str
+    recorded_at: str
+    step_id: str
+    title: str
+    detail: str = ""
+    status: OutcomeStatus
+    summary: str
+    stop_reason: str | None = None
+    trace: list[ExecutionTraceEntry] = Field(default_factory=list)
+    tool_invocations: list[ToolInvocation] = Field(default_factory=list)
+    raw_data: dict[str, object] = Field(default_factory=dict)
+
+
+class WorkspacePlanItemResponse(BaseModel):
+    item_id: str
+    kind: str
+    label: str
+    time_label: str = ""
+    status: str
+    step_id: str | None = None
+    active: bool = False
+    current: bool = False
+    execution_records: list[WorkspaceExecutionRecordResponse] = Field(default_factory=list)
+
+
+class WorkspaceWorkbenchResponse(BaseModel):
+    summary: RuntimeStateSnapshot
+    state: RuntimeState
+    current_plan: PlanState
+    persona_name: str = ""
+    latest_execution: RuntimeDebugExecutionResponse | None = None
+    latest_replan: RuntimeDebugReplanResponse | None = None
+    plan_items: list[WorkspacePlanItemResponse] = Field(default_factory=list)
+    roleplay_context_preview: str = ""
+
+
+class WorkspaceChatEntryResponse(BaseModel):
+    entry_id: str
+    created_at: str
+    direction: str = ""
+    channel: str = ""
+    partner_name: str = ""
+    speaker: str = ""
+    content: str = ""
+    raw_content: str = ""
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class WorkspaceChatResponse(BaseModel):
+    persona_name: str = ""
+    entries: list[WorkspaceChatEntryResponse] = Field(default_factory=list)
+    roleplay_context_preview: str = ""
 
 
 class PromptFileSummaryResponse(BaseModel):
@@ -581,10 +640,159 @@ def _latest_replan_debug(memory_service: object) -> RuntimeDebugReplanResponse |
         recorded_at=entry.created_at,
         decision=decision,
         event_type=str(entry.payload.get("event_type", "none")),
-        outcome_status=str(entry.payload.get("outcome_status", "")),
         outcome_summary=str(entry.payload.get("outcome_summary", "")),
-        plan_exhausted=bool(entry.payload.get("plan_exhausted", False)),
     )
+
+
+def _workspace_execution_records(
+    memory_service: object,
+    *,
+    limit: int = 80,
+) -> list[WorkspaceExecutionRecordResponse]:
+    entries = getattr(memory_service, "raw_entries", None)
+    if not isinstance(entries, list):
+        return []
+    records: list[WorkspaceExecutionRecordResponse] = []
+    for entry in reversed(entries):
+        if not isinstance(entry, RawLogEntry) or entry.kind != "outcome":
+            continue
+        step_payload = entry.payload.get("step")
+        outcome_payload = entry.payload.get("outcome")
+        if not isinstance(step_payload, dict) or not isinstance(outcome_payload, dict):
+            continue
+        try:
+            step = PlanStep.model_validate(step_payload)
+            outcome = ActionOutcome.model_validate(outcome_payload)
+        except Exception:
+            continue
+        stop_reason = outcome.raw_data.get("loop_stop_reason")
+        records.append(
+            WorkspaceExecutionRecordResponse(
+                raw_entry_id=entry.entry_id,
+                recorded_at=entry.created_at,
+                step_id=step.step_id,
+                title=step.title,
+                detail=step.detail,
+                status=outcome.status,
+                summary=outcome.content,
+                stop_reason=str(stop_reason) if stop_reason is not None else None,
+                trace=outcome.execution_trace,
+                tool_invocations=outcome.tool_invocations,
+                raw_data={
+                    str(key): value
+                    for key, value in outcome.raw_data.items()
+                },
+            )
+        )
+        if len(records) >= limit:
+            break
+    records.reverse()
+    return records
+
+
+def _workspace_plan_items(
+    *,
+    state: RuntimeState,
+    execution_records: list[WorkspaceExecutionRecordResponse],
+) -> list[WorkspacePlanItemResponse]:
+    records_by_step_id: dict[str, list[WorkspaceExecutionRecordResponse]] = {}
+    for record in execution_records:
+        records_by_step_id.setdefault(record.step_id, []).append(record)
+
+    items: list[WorkspacePlanItemResponse] = []
+    if state.plan.day_blocks:
+        for block in state.plan.day_blocks:
+            step_id = f"block_{block.block_id}"
+            items.append(
+                WorkspacePlanItemResponse(
+                    item_id=block.block_id,
+                    kind="day_block",
+                    label=block.label,
+                    time_label=block.time,
+                    status=block.status.value,
+                    step_id=step_id,
+                    active=state.plan.active_block_id == block.block_id,
+                    current=state.current_action_id == step_id,
+                    execution_records=records_by_step_id.get(step_id, []),
+                )
+            )
+        return items
+
+    for step in state.plan.minute_steps:
+        items.append(
+            WorkspacePlanItemResponse(
+                item_id=step.step_id,
+                kind="minute_step",
+                label=step.title,
+                time_label=step.scheduled_for or "",
+                status=step.status.value,
+                step_id=step.step_id,
+                active=state.current_action_id == step.step_id,
+                current=state.current_action_id == step.step_id,
+                execution_records=records_by_step_id.get(step.step_id, []),
+            )
+        )
+    return items
+
+
+def _workspace_chat_entries(
+    memory_service: object,
+    *,
+    persona_name: str,
+    limit: int = 80,
+) -> list[WorkspaceChatEntryResponse]:
+    getter = getattr(memory_service, "get_persisted_roleplay_agent_context", None)
+    if not callable(getter):
+        return []
+    context = getter()
+    raw_entries = getattr(context, "entries", [])
+    if not isinstance(raw_entries, list):
+        return []
+
+    messages: list[WorkspaceChatEntryResponse] = []
+    for entry in raw_entries:
+        kind = str(getattr(entry, "kind", "")).strip()
+        raw_content = str(getattr(entry, "content", "")).strip()
+        metadata = getattr(entry, "metadata", {})
+        if kind != "interaction_record" or not raw_content:
+            continue
+        if not isinstance(metadata, dict):
+            metadata = {}
+        direction = str(metadata.get("direction", "")).strip()
+        channel = str(metadata.get("channel", "")).strip()
+        partner_name = str(metadata.get("interaction_partner", "")).strip()
+        lines = [line.strip() for line in raw_content.splitlines() if line.strip()]
+        speaker = partner_name if direction == "incoming" else (persona_name.strip() or "角色")
+        content = raw_content
+        for line in reversed(lines):
+            if line.startswith("【") and line.endswith("】"):
+                continue
+            if ":" in line:
+                maybe_speaker, maybe_content = line.split(":", 1)
+                if maybe_content.strip():
+                    speaker = maybe_speaker.strip() or speaker
+                    content = maybe_content.strip()
+                    break
+                continue
+            content = line
+            break
+        messages.append(
+            WorkspaceChatEntryResponse(
+                entry_id=str(getattr(entry, "created_at", "")) + ":" + direction,
+                created_at=str(getattr(entry, "created_at", "")),
+                direction=direction,
+                channel=channel,
+                partner_name=partner_name,
+                speaker=speaker,
+                content=content,
+                raw_content=raw_content,
+                metadata={
+                    str(key): value
+                    for key, value in metadata.items()
+                },
+            )
+        )
+    return messages[-limit:]
 
 
 def _tool_specs(orchestrator: RuntimeOrchestrator) -> list[ToolSpec]:
@@ -727,11 +935,17 @@ def build_orchestrator(
     prompt_store: PromptStore | None = None,
 ) -> RuntimeOrchestrator:
     registry = capability_registry or CapabilityRegistry()
+    contact_book = ContactBook()
     InternalProvider(
         read_url_http_client=read_url_http_client,
         search_web_http_client=search_web_http_client,
+        contact_book=contact_book,
     ).register_tools(
         registry,
+    )
+    services_roleplay_agent = ModelRoleplayAgent(
+        model_client=model_client,
+        model_router=model_router,
     )
     return RuntimeOrchestrator(
         services=OrchestratorServices(
@@ -740,16 +954,18 @@ def build_orchestrator(
                 model_router=model_router,
                 memory_service=memory_service,
                 prompt_store=prompt_store,
+                execution_granularity=(
+                    execution_settings.execution_granularity
+                    if execution_settings is not None
+                    else ExecutionGranularity.MINUTE
+                ),
             ),
             execution=ExecutionService(
                 registry,
                 model_client=model_client,
                 model_router=model_router,
                 memory_service=memory_service,
-                roleplay_agent=ModelRoleplayAgent(
-                    model_client=model_client,
-                    model_router=model_router,
-                ),
+                roleplay_agent=services_roleplay_agent,
                 max_inner_loop_turns=(
                     execution_settings.max_inner_loop_turns if execution_settings is not None else 7
                 ),
@@ -765,12 +981,21 @@ def build_orchestrator(
                 memory_service=memory_service,
                 prompt_store=prompt_store,
             ),
-            interaction=InteractionPolicy(memory_service=memory_service),
+            interaction=InteractionService(
+                memory_service=memory_service,
+                roleplay_agent=services_roleplay_agent,
+                contact_book=contact_book,
+            ),
             memory=memory_service,
             communication=communication_hub,
         ),
         initial_state=initial_state,
         clock=clock,
+        interaction_cooldown_seconds=(
+            execution_settings.interaction_cooldown_seconds
+            if execution_settings is not None
+            else 180
+        ),
     )
 
 
@@ -796,7 +1021,7 @@ def create_app(
     model_client: ModelClient | None = None,
     prompt_root: Path | None = None,
     app_title: str = "Amadeus",
-    default_front_page: str = "executor-lab.html",
+    default_front_page: str = "workspace.html",
     auto_start_scheduler: bool = True,
     restore_runtime_state: bool = True,
 ) -> FastAPI:
@@ -831,6 +1056,7 @@ def create_app(
             snapshot_path=workspace.snapshot_path,
             active_memory_path=workspace.active_memory_path,
             core_memory_path=workspace.core_memory_path,
+            roleplay_context_path=workspace.roleplay_context_path,
             archive_memory_path=workspace.archive_memory_path,
             storage_settings=storage_settings,
             retrieval_settings=retrieval_settings,
@@ -915,10 +1141,9 @@ def create_app(
                 soul_md=soul_md.strip(),
             )
         if cleaned_memories:
-            memory_service.core_memory.recent_events = cleaned_memories
-            touch = getattr(memory_service, "_touch_core_memory", None)
-            if callable(touch):
-                touch()
+            setter = getattr(memory_service, "set_manual_context_memories", None)
+            if callable(setter):
+                setter(cleaned_memories)
 
     def _build_runtime_session(
         *,
@@ -1032,6 +1257,11 @@ def create_app(
         "/front/assets",
         StaticFiles(directory=front_root / "assets"),
         name="front-assets",
+    )
+    app.mount(
+        "/assets",
+        StaticFiles(directory=front_root / "assets"),
+        name="assets",
     )
     app.state.runtime_session = runtime_session
     app.state.orchestrator = runtime_session.orchestrator
@@ -1212,17 +1442,24 @@ def create_app(
     def _front_page_response(page_name: str) -> HTMLResponse:
         return HTMLResponse((front_root / "pages" / page_name).read_text(encoding="utf-8"))
 
+    def _executor_lab_page_response() -> HTMLResponse:
+        return _front_page_response("executor-lab-standalone.html")
+
     @app.get("/", response_class=HTMLResponse)
     async def front_index() -> HTMLResponse:
         return _front_page_response(default_front_page)
 
     @app.get("/front/executor-lab", response_class=HTMLResponse)
     async def front_executor_lab_page() -> HTMLResponse:
-        return _front_page_response("executor-lab.html")
+        return _executor_lab_page_response()
+
+    @app.get("/front/workspace", response_class=HTMLResponse)
+    async def front_workspace_page() -> HTMLResponse:
+        return _front_page_response("workspace.html")
 
     @app.get("/front/debug", response_class=HTMLResponse)
     async def front_debug_page() -> HTMLResponse:
-        return _front_page_response("executor-lab.html")
+        return _executor_lab_page_response()
 
     @app.get("/api/prompts", response_model=list[PromptFileSummaryResponse])
     async def list_prompt_files() -> list[PromptFileSummaryResponse]:
@@ -1654,6 +1891,60 @@ def create_app(
             mcp_servers=summary.mcp_servers,
         )
 
+    @app.get("/api/workspace/workbench", response_model=WorkspaceWorkbenchResponse)
+    async def get_workspace_workbench() -> WorkspaceWorkbenchResponse:
+        orchestrator = _current_orchestrator()
+        memory_service = _current_memory_service()
+        summary = build_runtime_snapshot(
+            state=orchestrator.state,
+            orchestrator=orchestrator,
+            mcp_provider=mcp_provider,
+        )
+        execution_records = _workspace_execution_records(memory_service)
+        roleplay_context_preview = ""
+        getter = getattr(memory_service, "get_persisted_roleplay_agent_context", None)
+        if callable(getter):
+            context = getter()
+            renderer = getattr(context, "render_for_roleplay", None)
+            if callable(renderer):
+                roleplay_context_preview = renderer()
+        return WorkspaceWorkbenchResponse(
+            summary=summary,
+            state=orchestrator.state,
+            current_plan=orchestrator.state.plan,
+            persona_name=orchestrator.state.persona_name,
+            latest_execution=_latest_execution_debug(memory_service),
+            latest_replan=_latest_replan_debug(memory_service),
+            plan_items=_workspace_plan_items(
+                state=orchestrator.state,
+                execution_records=execution_records,
+            ),
+            roleplay_context_preview=roleplay_context_preview,
+        )
+
+    @app.get("/api/workspace/chat", response_model=WorkspaceChatResponse)
+    async def get_workspace_chat(
+        limit: int = Query(default=80, ge=1, le=400),
+    ) -> WorkspaceChatResponse:
+        orchestrator = _current_orchestrator()
+        memory_service = _current_memory_service()
+        roleplay_context_preview = ""
+        getter = getattr(memory_service, "get_persisted_roleplay_agent_context", None)
+        if callable(getter):
+            context = getter()
+            renderer = getattr(context, "render_for_roleplay", None)
+            if callable(renderer):
+                roleplay_context_preview = renderer()
+        return WorkspaceChatResponse(
+            persona_name=orchestrator.state.persona_name,
+            entries=_workspace_chat_entries(
+                memory_service,
+                persona_name=orchestrator.state.persona_name,
+                limit=limit,
+            ),
+            roleplay_context_preview=roleplay_context_preview,
+        )
+
     @app.get("/api/plan-lab/debug", response_model=PlanLabDebugResponse)
     async def get_plan_lab_debug(
         limit: int = Query(default=12, ge=1, le=100),
@@ -1756,25 +2047,16 @@ def create_app(
         )
         outcome = ActionOutcome(
             action_id=orchestrator.state.current_action_id or "plan_lab_action",
-            status=request.outcome_status,
+            status=OutcomeStatus.SUCCESS,
             mode=request.execution_mode,
             source=request.execution_zone,
             content=request.outcome_content,
-        )
-        plan_exhausted = (
-            request.plan_exhausted
-            if request.plan_exhausted is not None
-            else (
-                bool(orchestrator.state.plan.minute_steps)
-                and all(step.status == "complete" for step in orchestrator.state.plan.minute_steps)
-            )
         )
         decision = await orchestrator.services.replan.decide(
             now=now,
             state=orchestrator.state,
             event=event,
             outcome=outcome,
-            plan_exhausted=plan_exhausted,
         )
         recorder = getattr(memory_service, "record_replan_decision", None)
         if callable(recorder):
@@ -1782,7 +2064,6 @@ def create_app(
                 decision,
                 event=event,
                 outcome=outcome,
-                plan_exhausted=plan_exhausted,
             )
         return PlanLabReplanDecisionResponse(
             decision=decision,
@@ -1816,7 +2097,7 @@ def create_app(
         )
         outcome = ActionOutcome(
             action_id=orchestrator.state.current_action_id or "plan_lab_action",
-            status=request.outcome_status,
+            status=OutcomeStatus.SUCCESS,
             mode=request.execution_mode,
             source=request.execution_zone,
             content=request.outcome_content,
@@ -1828,7 +2109,6 @@ def create_app(
                 ReplanDecision(kind=request.kind, reason=request.reason.strip()),
                 event=event,
                 outcome=outcome,
-                plan_exhausted=False,
             )
         refreshed = await orchestrator.services.planning.replan_after_completion(
             orchestrator.state,
@@ -2001,28 +2281,53 @@ def create_app(
             mcp_servers=_mcp_server_snapshots(mcp_provider),
         )
 
-    @app.get("/api/front/executor-lab/defaults", response_model=ExecutorLabDefaultsResponse)
-    async def get_executor_lab_defaults() -> ExecutorLabDefaultsResponse:
-        memory_service = _current_memory_service()
-        orchestrator = _current_orchestrator()
-        return executor_lab_defaults(
-            core_memory=memory_service.core_memory,
-            tool_specs=_tool_specs(orchestrator),
-        )
-
-    @app.post("/api/front/executor-lab/run", response_model=ExecutorLabResponse)
-    async def run_executor_lab(request: ExecutorLabRequest) -> ExecutorLabResponse:
+    def _build_executor_lab_runner() -> ExecutorLabRunner:
         session = _current_session()
-        runner = ExecutorLabRunner(
+        return ExecutorLabRunner(
             execution_service=session.orchestrator.services.execution,
             memory_service=session.memory_service,
             state=session.orchestrator.state,
             now_provider=session.orchestrator.now,
         )
+
+    @app.get("/api/executor-lab/defaults", response_model=ExecutorLabDefaultsResponse)
+    async def get_standalone_executor_lab_defaults() -> ExecutorLabDefaultsResponse:
+        orchestrator = _current_orchestrator()
+        return empty_executor_lab_defaults(tool_specs=_tool_specs(orchestrator))
+
+    @app.get("/api/front/executor-lab/defaults", response_model=ExecutorLabDefaultsResponse)
+    async def get_executor_lab_defaults() -> ExecutorLabDefaultsResponse:
+        return await get_standalone_executor_lab_defaults()
+
+    @app.post("/api/executor-lab/run/stream")
+    async def stream_executor_lab(request: ExecutorLabRequest) -> StreamingResponse:
+        runner = _build_executor_lab_runner()
+
+        async def event_stream():
+            async for event in runner.stream(request):
+                yield json.dumps(event.model_dump(mode="json"), ensure_ascii=False) + "\n"
+
+        headers = {
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        }
+        return StreamingResponse(
+            event_stream(),
+            media_type="application/x-ndjson",
+            headers=headers,
+        )
+
+    @app.post("/api/executor-lab/run", response_model=ExecutorLabResponse)
+    async def run_standalone_executor_lab(request: ExecutorLabRequest) -> ExecutorLabResponse:
+        runner = _build_executor_lab_runner()
         try:
             return await runner.run(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/front/executor-lab/run", response_model=ExecutorLabResponse)
+    async def run_executor_lab(request: ExecutorLabRequest) -> ExecutorLabResponse:
+        return await run_standalone_executor_lab(request)
 
     return app
 

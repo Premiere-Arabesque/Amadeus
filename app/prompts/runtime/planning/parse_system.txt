@@ -3,7 +3,6 @@
 输出时要提炼出：
 - day_summary
 - 2-4 个 day_items
-- current_hour_summary
 - 2-3 个 hour_items
 - 2-4 个 steps
 

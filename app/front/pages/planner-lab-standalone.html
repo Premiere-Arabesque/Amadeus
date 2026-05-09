@@ -13,13 +13,13 @@
           <p class="eyebrow">Planner Lab</p>
           <h1>Plan / Replan Workbench</h1>
           <p class="sidebar-copy">
-            这里只用于调试计划生成与重规划，不会再混入旧控制台、人物管理或其他调试页。
+            这里专门用来调试日计划生成、时段展开、replan，以及和 planning 直接相关的上下文。
           </p>
         </div>
 
         <nav class="side-nav" aria-label="Planner lab sections">
           <button class="nav-link is-active" data-section="context" type="button">上下文</button>
-          <button class="nav-link" data-section="planning" type="button">计划生成</button>
+          <button class="nav-link" data-section="planning" type="button">规划</button>
           <button class="nav-link" data-section="replan" type="button">Replan</button>
           <button class="nav-link" data-section="trace" type="button">Trace</button>
         </nav>
@@ -45,36 +45,62 @@
           <div class="section-head">
             <div>
               <p class="eyebrow">Context</p>
-              <h3>角色与长期设定</h3>
+              <h3>稳定层与当天上下文</h3>
             </div>
           </div>
 
           <div class="panel">
             <div class="panel-grid panel-grid-context">
               <label class="field">
-                <span>PERSONA_NAME</span>
-                <input id="persona-name" type="text" placeholder="例如：林可馨" />
+                <span>角色名</span>
+                <input id="persona-name" type="text" placeholder="例如：Amadeus / 红莉栖" />
               </label>
               <label class="field field-full">
-                <span>SOUL_MD</span>
-                <textarea id="soul-md" rows="14" placeholder="直接手填角色的 soul.md"></textarea>
+                <span>soul.md</span>
+                <textarea id="soul-md" rows="12" placeholder="手动填写当前稳定人格设定"></textarea>
               </label>
               <label class="field field-full">
-                <span>MEMORIES</span>
+                <span>手动记忆条目</span>
                 <textarea
                   id="memory-lines"
-                  rows="10"
-                  placeholder="一行一条。Day Start 会把它们当作“昨天发生的事情”，Replan 会把它们当作相关记忆。"
+                  rows="8"
+                  placeholder="一行一条。这些条目会进入检索层，不会直接写进 Core Memory。"
                 ></textarea>
               </label>
             </div>
           </div>
 
+          <div class="context-grid">
+            <article class="panel">
+              <div class="section-head compact">
+                <h4>Core Memory</h4>
+              </div>
+              <pre id="core-memory-preview" class="code-block compact"></pre>
+            </article>
+
+            <article class="panel">
+              <div class="section-head compact">
+                <h4>RoleplayAgentContext 摘要</h4>
+              </div>
+              <div id="roleplay-context-summary" class="summary-strip"></div>
+              <div class="roleplay-context-layout">
+                <div>
+                  <h5>今天的上下文块</h5>
+                  <pre id="roleplay-context-current" class="code-block compact"></pre>
+                </div>
+                <div>
+                  <h5>昨天保留给 planning 的块</h5>
+                  <pre id="roleplay-context-previous" class="code-block compact"></pre>
+                </div>
+              </div>
+            </article>
+          </div>
+
           <div class="panel">
             <div class="section-head compact">
-              <h4>Core Memory 预览</h4>
+              <h4>Day Start Recall 预览</h4>
             </div>
-            <pre id="core-memory-preview" class="code-block compact"></pre>
+            <div id="day-start-memory-preview" class="memory-preview-list"></div>
           </div>
         </section>
 
@@ -82,7 +108,7 @@
           <div class="section-head">
             <div>
               <p class="eyebrow">Planning</p>
-              <h3>时间与计划生成</h3>
+              <h3>日计划与执行粒度</h3>
             </div>
           </div>
 
@@ -93,32 +119,33 @@
                 <input id="clock-input" type="datetime-local" />
               </label>
               <div class="field action-field">
-                <span>时间操作</span>
+                <span>时间与规划操作</span>
                 <div class="button-row">
                   <button id="set-clock" class="button ghost" type="button">应用时间</button>
                   <button id="expand-ready-block" class="button ghost" type="button">展开当前时段</button>
-                  <button id="day-start" class="button primary" type="button">生成计划</button>
+                  <button id="day-start" class="button primary" type="button">生成今天计划</button>
                 </div>
               </div>
               <label class="field field-full">
                 <span>Day Start 备注</span>
-                <input id="day-start-note" type="text" placeholder="可选，用来标记这次 day start 的实验目的" />
+                <input id="day-start-note" type="text" placeholder="可选，用来标记这次 day-start 的实验目的" />
               </label>
             </div>
           </div>
 
           <div class="panel">
             <div class="section-head compact">
-              <h4>当前计划表</h4>
+              <h4>当前计划</h4>
             </div>
             <div id="plan-summary" class="summary-strip"></div>
+            <div id="granularity-banner" class="granularity-banner"></div>
             <div class="plan-layout">
               <div>
-                <h5>时间块计划</h5>
+                <h5>Day Blocks</h5>
                 <div id="day-blocks" class="plan-list"></div>
               </div>
               <div>
-                <h5>当前分钟动作</h5>
+                <h5>Minute Steps</h5>
                 <div id="minute-steps" class="plan-list"></div>
               </div>
             </div>
@@ -140,36 +167,23 @@
               </div>
               <div class="panel-grid">
                 <label class="field field-full">
-                  <span>outcome_content</span>
+                  <span>Outcome Content</span>
                   <textarea
                     id="decide-outcome-content"
                     rows="6"
-                    placeholder="例如：刚才的计划执行到一半，被现实里的事情打断了。"
+                    placeholder="例如：刚才的动作被现实里的事情打断了，当前计划需要重新判断。"
                   ></textarea>
                 </label>
                 <label class="field">
-                  <span>outcome_status</span>
-                  <select id="decide-outcome-status">
-                    <option value="success">success</option>
-                    <option value="partial_success">partial_success</option>
-                    <option value="retryable_failure">retryable_failure</option>
-                    <option value="blocked_failure">blocked_failure</option>
-                  </select>
-                </label>
-                <label class="field">
-                  <span>event_text</span>
+                  <span>Event Text</span>
                   <input
                     id="decide-event-text"
                     type="text"
-                    placeholder="例如：朋友突然发来消息，说有事情想和你说"
+                    placeholder="例如：朋友突然发来消息，说有急事想和你说"
                   />
                 </label>
-                <label class="checkbox-field">
-                  <input id="decide-plan-exhausted" type="checkbox" />
-                  <span>当前 minute window 已经耗尽</span>
-                </label>
                 <div class="field action-field field-full">
-                  <span>判定</span>
+                  <span>操作</span>
                   <div class="button-row">
                     <button id="decide-replan" class="button primary" type="button">执行 Replan Decide</button>
                     <button id="run-replan-flow" class="button ghost" type="button">一键判定并应用</button>
@@ -184,18 +198,18 @@
               </div>
               <div class="panel-grid">
                 <label class="field">
-                  <span>kind</span>
+                  <span>Kind</span>
                   <select id="apply-kind">
                     <option value="micro_replan">micro_replan</option>
                     <option value="hour_replan">hour_replan</option>
                   </select>
                 </label>
                 <label class="field">
-                  <span>reason</span>
-                  <input id="apply-reason" type="text" value="手动应用一次 replan 观察计划变化。" />
+                  <span>Reason</span>
+                  <input id="apply-reason" type="text" value="手动应用一次 replan，观察计划如何变化。" />
                 </label>
                 <label class="field field-full">
-                  <span>outcome_content</span>
+                  <span>Outcome Content</span>
                   <textarea
                     id="apply-outcome-content"
                     rows="6"
@@ -203,7 +217,7 @@
                   ></textarea>
                 </label>
                 <div class="field action-field field-full">
-                  <span>应用</span>
+                  <span>操作</span>
                   <div class="button-row">
                     <button id="apply-replan" class="button primary" type="button">执行 Replan Apply</button>
                   </div>

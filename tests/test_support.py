@@ -73,6 +73,7 @@ class MemoryHarness:
     snapshot_store: InMemorySnapshotStore = field(default_factory=InMemorySnapshotStore)
     active_store: InMemoryJsonlStore = field(default_factory=InMemoryJsonlStore)
     core_store: InMemoryJsonStore = field(default_factory=InMemoryJsonStore)
+    roleplay_context_store: InMemoryJsonStore = field(default_factory=InMemoryJsonStore)
     archive_store: InMemoryJsonlStore = field(default_factory=InMemoryJsonlStore)
 
 
@@ -96,6 +97,7 @@ def build_in_memory_memory_service(
         snapshot_path=Path("memory/tests/snapshots.jsonl"),
         active_memory_path=Path("memory/tests/active.jsonl"),
         core_memory_path=Path("memory/tests/core.json"),
+        roleplay_context_path=Path("memory/tests/roleplay_context.json"),
         archive_memory_path=Path("memory/tests/archive.jsonl"),
         storage_settings=MemoryStorageSettings(
             active_retention_days=active_retention_days,
@@ -109,8 +111,10 @@ def build_in_memory_memory_service(
     service.snapshot_store = harness.snapshot_store
     service.active_store = harness.active_store
     service.core_store = harness.core_store
+    service.roleplay_context_store = harness.roleplay_context_store
     service.archive_store = harness.archive_store
     service.core_memory = service._load_core_memory()
+    service.roleplay_context = service._load_roleplay_context()
     service.raw_entries = service._load_raw_entries()
     service.active_entries = service._load_active_entries()
     service.archive_entries = service._load_archive_entries()

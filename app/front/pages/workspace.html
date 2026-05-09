@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Amadeus Workspace</title>
+    <link rel="stylesheet" href="/assets/workspace.css" />
+  </head>
+  <body>
+    <div class="workspace-shell">
+      <aside class="sidebar">
+        <div class="brand-block">
+          <p class="brand-kicker">Amadeus</p>
+          <h1>角色工作台</h1>
+          <p id="sidebar-persona" class="brand-meta">正在读取角色信息...</p>
+        </div>
+
+        <nav class="sidebar-nav">
+          <button class="nav-link active" data-section="personas" type="button">角色</button>
+          <button class="nav-link" data-section="workbench" type="button">工作台</button>
+          <button class="nav-link" data-section="chat" type="button">聊天</button>
+          <button class="nav-link" data-section="settings" type="button">设置</button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <p id="sidebar-status" class="status-pill">正在初始化...</p>
+          <button id="refresh-all" class="ghost-button" type="button">刷新全部</button>
+          <a class="debug-link" href="/front/debug">打开独立调试页</a>
+        </div>
+      </aside>
+
+      <main class="main-shell">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Integrated Workspace</p>
+            <h2 id="section-title">角色</h2>
+          </div>
+          <div id="page-message" class="page-message hidden"></div>
+        </header>
+
+        <section id="section-personas" class="view-section active">
+          <div class="section-grid personas-layout">
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Personas</p>
+                  <h3>角色列表</h3>
+                </div>
+              </div>
+              <div id="persona-list" class="stack-list"></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Editor</p>
+                  <h3>角色详情</h3>
+                </div>
+              </div>
+
+              <form id="persona-create-form" class="inline-form">
+                <label class="field grow">
+                  <span>新角色名称</span>
+                  <input id="persona-create-name" type="text" placeholder="例如：花梨" />
+                </label>
+                <button class="primary-button" type="submit">创建角色</button>
+              </form>
+
+              <div class="field-grid">
+                <label class="field">
+                  <span>角色名</span>
+                  <input id="persona-name" type="text" disabled />
+                </label>
+                <label class="field">
+                  <span>Persona Key</span>
+                  <input id="persona-key" type="text" disabled />
+                </label>
+              </div>
+
+              <label class="field">
+                <span>soul.md</span>
+                <textarea id="persona-soul" rows="18" placeholder="选择一个角色后即可编辑 soul.md"></textarea>
+              </label>
+
+              <div class="button-row">
+                <button id="persona-save" class="primary-button" type="button">保存 soul.md</button>
+                <button id="persona-activate" class="secondary-button" type="button">设为活动角色</button>
+                <button id="persona-delete" class="danger-button" type="button">删除角色</button>
+              </div>
+
+              <details class="debug-panel">
+                <summary>调试信息</summary>
+                <pre id="persona-debug" class="code-block">{}</pre>
+              </details>
+            </article>
+          </div>
+        </section>
+
+        <section id="section-workbench" class="view-section">
+          <div class="section-grid">
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Runtime</p>
+                  <h3>当前状态</h3>
+                </div>
+              </div>
+
+              <div id="workbench-summary" class="summary-grid"></div>
+
+              <div class="field-grid">
+                <label class="field">
+                  <span>虚拟时间</span>
+                  <div id="virtual-time-display" class="time-display">--</div>
+                </label>
+                <label class="field">
+                  <span>设置虚拟时间</span>
+                  <input id="virtual-time-input" type="datetime-local" />
+                </label>
+              </div>
+
+              <div class="button-row">
+                <button id="virtual-time-apply" class="primary-button" type="button">应用时间</button>
+              </div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Plan</p>
+                  <h3>日计划</h3>
+                </div>
+              </div>
+              <div id="plan-list" class="plan-list"></div>
+
+              <details class="debug-panel">
+                <summary>调试信息</summary>
+                <pre id="workbench-debug" class="code-block">{}</pre>
+              </details>
+            </article>
+          </div>
+        </section>
+
+        <section id="section-chat" class="view-section">
+          <div class="section-grid chat-layout">
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Conversation</p>
+                  <h3>聊天区</h3>
+                </div>
+              </div>
+
+              <div id="chat-feed" class="chat-feed"></div>
+
+              <details class="debug-panel">
+                <summary>调试信息</summary>
+                <pre id="chat-debug" class="code-block">{}</pre>
+              </details>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Composer</p>
+                  <h3>发送消息</h3>
+                </div>
+              </div>
+
+              <div class="field-grid">
+                <label class="field">
+                  <span>你的显示名</span>
+                  <input id="chat-user-name" type="text" value="用户" />
+                </label>
+                <label class="field">
+                  <span>用户 ID</span>
+                  <input id="chat-user-id" type="text" value="default-user" />
+                </label>
+              </div>
+
+              <label class="field">
+                <span>渠道</span>
+                <input id="chat-channel" type="text" value="api" />
+              </label>
+
+              <label class="field">
+                <span>消息内容</span>
+                <textarea id="chat-input" rows="8" placeholder="给当前活动角色发一条消息"></textarea>
+              </label>
+
+              <div class="button-row">
+                <button id="chat-send" class="primary-button" type="button">发送</button>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section id="section-settings" class="view-section">
+          <div class="section-grid">
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Tools</p>
+                  <h3>工具状态</h3>
+                </div>
+              </div>
+              <div id="tools-list" class="stack-list"></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">MCP</p>
+                  <h3>连接状态</h3>
+                </div>
+              </div>
+              <div id="mcp-list" class="stack-list"></div>
+
+              <details class="debug-panel">
+                <summary>调试信息</summary>
+                <pre id="settings-debug" class="code-block">{}</pre>
+              </details>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/assets/workspace.js" defer></script>
+  </body>
+</html>

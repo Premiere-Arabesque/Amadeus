@@ -19,18 +19,21 @@
     soulMd: document.getElementById("soul-md"),
     memoryLines: document.getElementById("memory-lines"),
     coreMemoryPreview: document.getElementById("core-memory-preview"),
+    roleplayContextSummary: document.getElementById("roleplay-context-summary"),
+    roleplayContextCurrent: document.getElementById("roleplay-context-current"),
+    roleplayContextPrevious: document.getElementById("roleplay-context-previous"),
+    dayStartMemoryPreview: document.getElementById("day-start-memory-preview"),
     clockInput: document.getElementById("clock-input"),
     setClock: document.getElementById("set-clock"),
     expandReadyBlock: document.getElementById("expand-ready-block"),
     dayStart: document.getElementById("day-start"),
     dayStartNote: document.getElementById("day-start-note"),
     planSummary: document.getElementById("plan-summary"),
+    granularityBanner: document.getElementById("granularity-banner"),
     dayBlocks: document.getElementById("day-blocks"),
     minuteSteps: document.getElementById("minute-steps"),
     decideOutcomeContent: document.getElementById("decide-outcome-content"),
-    decideOutcomeStatus: document.getElementById("decide-outcome-status"),
     decideEventText: document.getElementById("decide-event-text"),
-    decidePlanExhausted: document.getElementById("decide-plan-exhausted"),
     decideReplan: document.getElementById("decide-replan"),
     runReplanFlow: document.getElementById("run-replan-flow"),
     applyKind: document.getElementById("apply-kind"),
@@ -61,10 +64,6 @@
     return response.json();
   }
 
-  function formatJson(value) {
-    return JSON.stringify(value ?? {}, null, 2);
-  }
-
   function escapeHtml(value) {
     return String(value ?? "")
       .replaceAll("&", "&amp;")
@@ -74,34 +73,8 @@
       .replaceAll("'", "&#39;");
   }
 
-  function showMessage(text, kind = "info") {
-    elements.pageMessage.textContent = text;
-    elements.pageMessage.className = `page-message message-${kind}`;
-    window.clearTimeout(showMessage.timerId);
-    showMessage.timerId = window.setTimeout(() => {
-      elements.pageMessage.className = "page-message hidden";
-    }, 2600);
-  }
-
-  function currentContextPayload() {
-    return {
-      persona_name: (elements.personaName.value || "").trim() || "Amadeus",
-      soul_md: elements.soulMd.value || "",
-      memories: (elements.memoryLines.value || "")
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean),
-    };
-  }
-
-  function currentDecidePayload() {
-    return {
-      ...currentContextPayload(),
-      outcome_status: elements.decideOutcomeStatus.value,
-      outcome_content: elements.decideOutcomeContent.value || "Manual replan decision.",
-      event_text: elements.decideEventText.value || "",
-      plan_exhausted: elements.decidePlanExhausted.checked,
-    };
+  function formatJson(value) {
+    return JSON.stringify(value ?? {}, null, 2);
   }
 
   function formatDateTime(value) {
@@ -135,6 +108,34 @@
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
       date.getHours()
     )}:${pad(date.getMinutes())}`;
+  }
+
+  function showMessage(text, kind = "info") {
+    elements.pageMessage.textContent = text;
+    elements.pageMessage.className = `page-message message-${kind}`;
+    window.clearTimeout(showMessage.timerId);
+    showMessage.timerId = window.setTimeout(() => {
+      elements.pageMessage.className = "page-message hidden";
+    }, 2600);
+  }
+
+  function currentContextPayload() {
+    return {
+      persona_name: (elements.personaName.value || "").trim() || "Amadeus",
+      soul_md: elements.soulMd.value || "",
+      memories: (elements.memoryLines.value || "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean),
+    };
+  }
+
+  function currentDecidePayload() {
+    return {
+      ...currentContextPayload(),
+      outcome_content: elements.decideOutcomeContent.value || "Manual replan decision.",
+      event_text: elements.decideEventText.value || "",
+    };
   }
 
   function activateSection(sectionId) {
@@ -175,8 +176,19 @@
       .join("");
   }
 
-  function renderCoreMemory(debug) {
+  function renderContext(debug) {
+    const roleplayContext = debug?.roleplay_context || {};
     elements.coreMemoryPreview.textContent = formatJson(debug?.core_memory || {});
+    elements.roleplayContextSummary.innerHTML = `
+      <span>context_date: ${escapeHtml(roleplayContext.context_date || "N/A")}</span>
+      <span>previous_context_date: ${escapeHtml(roleplayContext.previous_context_date || "N/A")}</span>
+      <span>today_entries: ${escapeHtml(String((roleplayContext.entries || []).length || 0))}</span>
+      <span>previous_entries: ${escapeHtml(String((roleplayContext.previous_entries || []).length || 0))}</span>
+    `;
+    elements.roleplayContextCurrent.textContent = renderEntryList(roleplayContext.entries);
+    elements.roleplayContextPrevious.textContent = renderEntryList(roleplayContext.previous_entries);
+    elements.dayStartMemoryPreview.innerHTML = renderMemoryPreview(debug?.day_start_memory_preview || []);
+
     if (!elements.clockInput.value && debug?.summary?.current_time) {
       elements.clockInput.value = toDatetimeLocal(debug.summary.current_time);
     }
@@ -186,15 +198,40 @@
     if (!elements.soulMd.value && debug?.core_memory?.soul_md) {
       elements.soulMd.value = debug.core_memory.soul_md;
     }
-    if (!elements.memoryLines.value && Array.isArray(debug?.core_memory?.recent_events)) {
-      elements.memoryLines.value = debug.core_memory.recent_events.join("\n");
+  }
+
+  function renderEntryList(entries) {
+    if (!Array.isArray(entries) || !entries.length) {
+      return "暂无内容。";
     }
+    return entries
+      .map((entry) => {
+        const header = `[${entry.kind || "entry"}] ${entry.created_at || ""}`.trim();
+        const content = entry.content || "";
+        return `${header}\n${content}`;
+      })
+      .join("\n\n----------------\n\n");
+  }
+
+  function renderMemoryPreview(memories) {
+    if (!Array.isArray(memories) || !memories.length) {
+      return `<div class="empty-state">当前没有可用于 day-start planning 的昨日记忆。</div>`;
+    }
+    return memories
+      .map(
+        (item) => `
+          <article class="plan-item">
+            <p class="plan-item-body">${escapeHtml(item)}</p>
+          </article>
+        `
+      )
+      .join("");
   }
 
   function renderPlanBlocks(plan) {
     const dayBlocks = Array.isArray(plan?.day_blocks) ? plan.day_blocks : [];
     if (!dayBlocks.length) {
-      elements.dayBlocks.innerHTML = `<div class="empty-state">还没有生成时间块计划。</div>`;
+      elements.dayBlocks.innerHTML = `<div class="empty-state">还没有生成 day blocks。</div>`;
       return;
     }
     elements.dayBlocks.innerHTML = dayBlocks
@@ -227,13 +264,13 @@
     });
   }
 
-  function renderMinuteSteps(plan, target) {
+  function renderMinuteSteps(plan) {
     const minuteSteps = Array.isArray(plan?.minute_steps) ? plan.minute_steps : [];
     if (!minuteSteps.length) {
-      target.innerHTML = `<div class="empty-state">当前没有展开的分钟动作。</div>`;
+      elements.minuteSteps.innerHTML = `<div class="empty-state">当前没有 minute steps。</div>`;
       return;
     }
-    target.innerHTML = minuteSteps
+    elements.minuteSteps.innerHTML = minuteSteps
       .map(
         (step) => `
           <article class="plan-item ${escapeHtml(step.status || "")}">
@@ -253,14 +290,23 @@
   function renderPlanSummary(debug) {
     const plan = debug?.current_plan || {};
     const summary = debug?.summary || {};
+    const granularity = debug?.execution_granularity || "minute";
     elements.planSummary.innerHTML = `
       <span>plan_date: ${escapeHtml(plan.plan_date || "N/A")}</span>
       <span>active_block_id: ${escapeHtml(plan.active_block_id || "N/A")}</span>
-      <span>current_time: ${escapeHtml(summary.current_time || "N/A")}</span>
       <span>runtime_status: ${escapeHtml(summary.runtime_status || "N/A")}</span>
+      <span>粒度: ${escapeHtml(granularity)}</span>
     `;
+    elements.granularityBanner.className = `granularity-banner granularity-${granularity}`;
+    if (granularity === "hour") {
+      elements.granularityBanner.textContent =
+        "当前是 hour 模式：planner 直接执行 active day block，不会展开 minute steps。";
+    } else {
+      elements.granularityBanner.textContent =
+        "当前是 minute 模式：planner 会把当前 day block 展开成 minute steps。";
+    }
     renderPlanBlocks(plan);
-    renderMinuteSteps(plan, elements.minuteSteps);
+    renderMinuteSteps(plan);
   }
 
   function latestDecisionFromDebug(debug) {
@@ -292,9 +338,7 @@
           <span>kind: ${escapeHtml(decision.kind || "N/A")}</span>
           <span>source: ${escapeHtml(decision.source || "N/A")}</span>
           <span>confidence: ${escapeHtml(
-            typeof decision.confidence === "number"
-              ? decision.confidence.toFixed(6)
-              : "N/A"
+            typeof decision.confidence === "number" ? decision.confidence.toFixed(6) : "N/A"
           )}</span>
         </div>
         <p class="plan-item-body">${escapeHtml(decision.reason || "没有附带 reason。")}</p>
@@ -322,11 +366,11 @@
       </div>
       <div class="plan-layout">
         <div>
-          <h5>时间块</h5>
+          <h5>Day Blocks</h5>
           <div class="plan-list">${elements.dayBlocks.innerHTML}</div>
         </div>
         <div>
-          <h5>分钟动作</h5>
+          <h5>Minute Steps</h5>
           <div class="plan-list">${elements.minuteSteps.innerHTML}</div>
         </div>
       </div>
@@ -373,9 +417,11 @@
       elements.traceResponse.textContent = "";
       return;
     }
+
     if (!state.selectedTraceId || !entries.some((entry) => entry.entry_id === state.selectedTraceId)) {
       state.selectedTraceId = entries[0].entry_id;
     }
+
     elements.traceList.innerHTML = entries
       .map((entry) => {
         const summary = traceSummary(entry, state.activeTraceKind);
@@ -390,6 +436,7 @@
         `;
       })
       .join("");
+
     elements.traceList.querySelectorAll("[data-trace-id]").forEach((button) => {
       button.addEventListener("click", () => {
         state.selectedTraceId = button.dataset.traceId || "";
@@ -415,7 +462,7 @@
   function renderAll(debug) {
     state.debug = debug;
     renderTopMetrics(debug?.summary || {});
-    renderCoreMemory(debug);
+    renderContext(debug);
     renderPlanSummary(debug);
     renderReplanSection(debug);
     renderTracePanel();
@@ -452,7 +499,7 @@
     state.lastDecision = null;
     renderAll(payload.debug);
     activateSection("planning");
-    showMessage("已重新生成计划表。", "success");
+    showMessage("今天的计划已重新生成。", "success");
   }
 
   async function expandReadyBlock() {
@@ -472,7 +519,7 @@
 
   async function expandSpecificBlock(blockId) {
     if (!blockId) {
-      throw new Error("缺少 block_id，无法展开指定时间段。");
+      throw new Error("缺少 block_id，无法展开指定时段。");
     }
     const payload = await request("/api/planner-lab/expand-block", {
       method: "POST",
@@ -485,7 +532,7 @@
     state.lastDecision = null;
     renderAll(payload.debug);
     activateSection("planning");
-    showMessage("已展开所选时间段。", "success");
+    showMessage("已展开所选时段。", "success");
   }
 
   async function decideReplan() {
@@ -523,8 +570,7 @@
     state.lastDecision = decisionPayload.decision;
 
     const decision = decisionPayload.decision || {};
-    elements.applyKind.value =
-      decision.kind === "hour_replan" ? "hour_replan" : "micro_replan";
+    elements.applyKind.value = decision.kind === "hour_replan" ? "hour_replan" : "micro_replan";
     elements.applyReason.value = decision.reason || "";
     elements.applyOutcomeContent.value =
       elements.decideOutcomeContent.value || "Manual replan apply.";
@@ -532,7 +578,7 @@
     if (decision.kind === "no_replan") {
       renderAll(decisionPayload.debug);
       activateSection("replan");
-      showMessage("判定结果为 no_replan，当前计划表保持不变。", "info");
+      showMessage("判定结果为 no_replan，当前计划保持不变。", "info");
       return;
     }
 
@@ -547,7 +593,7 @@
     });
     renderAll(applyPayload.debug);
     activateSection("replan");
-    showMessage(`已完成 ${decision.kind} 并更新当前计划表。`, "success");
+    showMessage(`已完成 ${decision.kind} 并更新当前计划。`, "success");
   }
 
   async function resetLab() {
@@ -564,6 +610,7 @@
     elements.traceTabs.forEach((button) => {
       button.addEventListener("click", () => activateTraceKind(button.dataset.traceKind || "model"));
     });
+
     elements.refreshDebug.addEventListener("click", async () => {
       try {
         await refreshDebug();

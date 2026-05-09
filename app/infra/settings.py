@@ -6,7 +6,7 @@ from os import getenv
 
 from pydantic import BaseModel, Field
 
-from app.core.types import ProviderName
+from app.core.types import ExecutionGranularity, ProviderName
 from app.tool.mcp_provider import MCPServerConfig
 
 
@@ -166,6 +166,8 @@ class MemoryStorageSettings(BaseModel):
 class ExecutionSettings(BaseModel):
     max_inner_loop_turns: int = 7
     loop_pre_replan_buffer_seconds: int = 30
+    interaction_cooldown_seconds: int = 180
+    execution_granularity: ExecutionGranularity = ExecutionGranularity.MINUTE
 
     @classmethod
     def from_env(cls) -> ExecutionSettings:
@@ -173,6 +175,10 @@ class ExecutionSettings(BaseModel):
         raw_buffer_value = getenv(
             "AMADEUS_EXECUTION_LOOP_PRE_REPLAN_BUFFER_SECONDS",
             "30",
+        ).strip()
+        raw_cooldown_value = getenv(
+            "AMADEUS_INTERACTION_COOLDOWN_SECONDS",
+            "180",
         ).strip()
         try:
             parsed_turns = int(raw_turn_value)
@@ -182,9 +188,25 @@ class ExecutionSettings(BaseModel):
             parsed_buffer = int(raw_buffer_value)
         except ValueError:
             parsed_buffer = 30
+        try:
+            parsed_cooldown = int(raw_cooldown_value)
+        except ValueError:
+            parsed_cooldown = 180
+        raw_granularity = getenv(
+            "AMADEUS_EXECUTION_GRANULARITY",
+            ExecutionGranularity.MINUTE.value,
+        ).strip()
+        try:
+            parsed_granularity = ExecutionGranularity(
+                raw_granularity or ExecutionGranularity.MINUTE.value
+            )
+        except ValueError:
+            parsed_granularity = ExecutionGranularity.MINUTE
         return cls(
             max_inner_loop_turns=max(1, parsed_turns),
             loop_pre_replan_buffer_seconds=max(0, parsed_buffer),
+            interaction_cooldown_seconds=max(0, parsed_cooldown),
+            execution_granularity=parsed_granularity,
         )
 
 

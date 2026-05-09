@@ -10,10 +10,10 @@
     <main class="page-shell">
       <section class="hero">
         <p class="eyebrow">Executor Lab</p>
-        <h1>独立 Executor 调试服务</h1>
+        <h1>独立 Execution 双 Loop 调试页</h1>
         <p class="hero-copy">
-          这个页面运行在独立服务里，只复用项目里的模型、MCP 连接逻辑和工具注册逻辑。
-          Persona 和 Memory 不接入，角色的 soul 与记忆由你当场手填。点击开始后会流式显示双 agent loop 的进度。
+          这个页面运行在独立服务里，复用项目里的模型路由、MCP 连接和工具注册逻辑，但仍然允许你手动填入
+          RoleplayAgentContext、联系人花名册和当前动作，用来单独调试 execution 双 agent loop。
         </p>
         <div class="hero-actions">
           <button id="load-defaults" class="ghost" type="button">加载工具列表</button>
@@ -30,26 +30,26 @@
             <div class="panel-head">
               <div>
                 <p class="eyebrow">Step</p>
-                <h2>分钟级动作</h2>
+                <h2>执行动作</h2>
               </div>
             </div>
             <div class="field-grid">
               <label class="field">
                 <span>标题</span>
-                <input id="step-title" type="text" value="刷小红书" />
+                <input id="step-title" type="text" value="搜搜长沙有什么好吃的" />
               </label>
               <label class="field">
-                <span>执行区</span>
+                <span>执行提示</span>
                 <select id="step-zone">
-                  <option value="auto">自动路由</option>
-                  <option value="real">Real Zone</option>
-                  <option value="non_real">Non-Real Zone</option>
+                  <option value="auto">自动</option>
+                  <option value="real">真实执行优先</option>
+                  <option value="non_real">非真实执行优先</option>
                 </select>
               </label>
             </div>
             <label class="field">
               <span>细节</span>
-              <textarea id="step-detail" rows="4">打开小红书首页，顺着推荐流看看有什么内容。</textarea>
+              <textarea id="step-detail" rows="4">打开搜索引擎，搜搜长沙有什么好吃的</textarea>
             </label>
             <div class="field-grid">
               <label class="field">
@@ -59,8 +59,8 @@
                 </select>
               </label>
               <label class="field">
-                <span>相关事件文本</span>
-                <input id="related-event-text" type="text" placeholder="可选，比如用户刚发来的消息" />
+                <span>关联事件文本</span>
+                <input id="related-event-text" type="text" placeholder="可选，例如刚收到的用户消息" />
               </label>
             </div>
             <label class="field">
@@ -86,12 +86,12 @@
                 <input id="buffer-seconds" type="number" min="0" max="600" value="30" />
               </label>
               <label class="field">
-                <span>模拟外部中断于第几轮</span>
+                <span>模拟外部中断轮次</span>
                 <input id="interrupt-after-turn" type="number" min="1" max="20" placeholder="留空表示不模拟" />
               </label>
             </div>
             <label class="field">
-              <span>下一个分钟级动作开始时间</span>
+              <span>下一个执行单元开始时间</span>
               <input id="next-step-scheduled-for" type="datetime-local" />
             </label>
           </article>
@@ -104,24 +104,28 @@
               </div>
             </div>
             <label class="field">
-              <span>名字</span>
+              <span>角色名</span>
               <input id="roleplay-name" type="text" value="Roleplay Agent" />
             </label>
             <label class="field">
               <span>soul.md / 核心设定</span>
-              <textarea id="roleplay-soul" rows="8" placeholder="手动填 soul.md 相关内容"></textarea>
+              <textarea id="roleplay-soul" rows="8" placeholder="手动填入 soul.md 的相关内容"></textarea>
             </label>
             <label class="field">
-              <span>计划上下文</span>
-              <textarea id="roleplay-plan-context" rows="4" placeholder="可手填小时计划、已展开的分钟计划等"></textarea>
+              <span>当前计划文本</span>
+              <textarea id="roleplay-plan-context" rows="4" placeholder="例如今天的小时计划或当前执行中的动作摘要"></textarea>
             </label>
             <label class="field">
               <span>上下文块</span>
-              <textarea id="roleplay-context-entries" rows="8" placeholder="按自然语言块手填；空行会分隔成多个 ContextEntry。比如：&#10;这几条记忆在你脑海中浮现：&#10;1. 条目1&#10;2. 条目2&#10;&#10;刚刚这个分钟计划发生了这些事：&#10;..."></textarea>
+              <textarea id="roleplay-context-entries" rows="8" placeholder="按自然语言块手填；空行会分隔成多个 ContextEntry。&#10;&#10;例如：&#10;你想起了一些事情：&#10;- 上次在长沙吃过臭豆腐&#10;- 朋友说东瓜山夜宵很多&#10;&#10;刚刚这个动作发生了这些事：&#10;你已经打开了搜索页。"></textarea>
             </label>
             <label class="field">
               <span>额外调试说明</span>
-              <textarea id="roleplay-extra-instructions" rows="4" placeholder="比如：回复更生活化一些，少一点解释。"></textarea>
+              <textarea id="roleplay-extra-instructions" rows="4" placeholder="例如：回答再生活化一点，少一点解释。"></textarea>
+            </label>
+            <label class="field">
+              <span>可联系花名册</span>
+              <textarea id="roleplay-registered-contacts" rows="5" placeholder="每行一个联系人，格式：名字 | 渠道 | recipient_id&#10;例如：&#10;用户 | api | default-user&#10;真由理 | wechat | mayuri-001"></textarea>
             </label>
           </article>
         </form>
@@ -136,8 +140,6 @@
             </div>
             <div id="tool-list" class="stack"></div>
           </article>
-
-          
         </aside>
       </section>
 
@@ -150,7 +152,7 @@
             </div>
           </div>
           <div id="result-summary" class="summary-grid">
-            <div class="placeholder-card">点击“开始调试”后，这里会显示停止原因和最终结果。</div>
+            <div class="placeholder-card">点击“开始调试”后，这里会显示停止原因、主动触达 handoff 和最终执行结果。</div>
           </div>
         </article>
 
@@ -162,7 +164,7 @@
             </div>
           </div>
           <div id="turn-list" class="turn-list">
-            <div class="placeholder-card">流式执行过程中，这里会持续追加每一轮的 scene、result 与 roleplay 回复。</div>
+            <div class="placeholder-card">流式执行过程中，这里会持续追加 Roleplay 与 Executor 的来回记录。</div>
           </div>
         </article>
 

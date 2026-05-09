@@ -28,6 +28,11 @@ class ExecutionMode(StrEnum):
     NARRATIVE = "narrative"
 
 
+class ExecutionGranularity(StrEnum):
+    MINUTE = "minute"
+    HOUR = "hour"
+
+
 class ExecutionZone(StrEnum):
     REAL = "real"
     NON_REAL = "non_real"

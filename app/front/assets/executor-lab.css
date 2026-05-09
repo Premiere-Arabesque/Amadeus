@@ -300,6 +300,55 @@ textarea:focus {
   margin-top: 0.6rem;
 }
 
+.executor-events-block {
+  margin-top: 0.7rem;
+  max-width: 100%;
+  padding: 0.35rem 0.4rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(29, 90, 75, 0.18);
+  background: rgba(29, 90, 75, 0.06);
+  overflow: hidden;
+}
+
+.executor-events-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.45rem 0.55rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.executor-events-summary::-webkit-details-marker {
+  display: none;
+}
+
+.executor-events-title {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--forest);
+}
+
+.executor-events-count {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.executor-events-code {
+  margin: 0.15rem 0 0;
+  background: rgba(255, 255, 255, 0.78);
+  max-width: 100%;
+  max-height: 18rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .tool-card h3,
 .turn-card h3,
 .summary-card h3 {

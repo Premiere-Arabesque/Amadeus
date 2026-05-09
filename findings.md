@@ -1,57 +1,237 @@
 # Findings & Decisions
 
 ## Requirements
-- Collapse the current three-zone execution model into a simpler two-zone model.
-- Keep runtime judgment lightweight: objective distinction should come from whether a tool was actually called.
-- Avoid pushing too much classification responsibility into the executor agent.
-- Perform the migration in three phases.
-- Use file-based planning (`task_plan.md`, `findings.md`, `progress.md`) as working memory.
+- `RoleplayAgentContext` should become the day-scoped context source of truth.
+- It should be persisted separately from `CoreMemory`, in `roleplay_context.json`.
+- `CoreMemory` should now only carry stable persona-level information, with `soul_md` as the only active field for now.
+- Execution, interaction, and retrieval should write natural-language blocks into the persisted roleplay context.
+- Planning should eventually use yesterday’s finished roleplay context for planning-only retrieval, but that planning-query shaping can be simple for now.
 
 ## Research Findings
-- Three-zone logic is concentrated most heavily in `app/runtime/execution.py`.
-- Shared low-level zone types currently live in `app/core/types.py` and are threaded into state/outcome models.
-- The debug surfaces (`app/front/executor_lab.py`, standalone lab, and older lab UI) expose three-zone assumptions directly.
-- The main executor runtime can already operate as two-zone after collapsing real failures and no-capability starts into `non_real`; the largest remaining code debt is now legacy wording and dead ambiguity helper code.
-- Prompt wording outside README has been mostly updated to `non_real`; the unreachable ambiguity helper block in `app/runtime/execution.py` has now been removed.
-- The main remaining legacy surface is compatibility handling for older zone values in shared types and debug request enums.
-- The old text-based capability router has now been removed from the main execution path; fallback behavior is explicit-capability only unless the SDK executor-agent path is available.
-- The old model-based internal responder / draft-generator paths have now also been removed from `app/runtime/execution.py`; only the executor-agent prompt path remains there.
-- `ExecutionService` no longer consumes `PromptStore`; prompt-store plumbing is still used elsewhere in planning/replan/persona, but not in execution anymore.
-- Heuristic execution fallback has now been removed as well: when executor-agent output is unavailable or the internal loop would need a fake roleplay responder, `execution.py` raises explicit runtime errors instead of inventing narrative continuation.
-- The executor-agent prompt is clearer when treated as: short runtime context first, then the roleplay agent's latest natural-language utterance as the final/primary input block.
-- Core memory writeback was previously based on `summarize_outcome()` compression; it now prefers a dialogue-style rendering from `outcome.execution_trace` when such trace data exists.
-- A stable shape for roleplay context is easier if it uses few fixed fields (`soul_md`, `plan_context`) plus an append-only list of typed context blocks, rather than many brittle per-feature fields.
-- Rendering should stay human-editable: `RoleplayAgentContext` now renders through a few small `f\"\"\"...\"\"\"` template methods so prompt wording can be changed in one file without touching storage shape.
-- The main runtime now has a concrete roleplay-agent boundary: first executor input comes from `step.detail`, while later turns come from a `RoleplayAgent` fed by `RoleplayAgentContext.render_for_roleplay()`.
-- Dialogue-style memory writeback is most reliable when execution traces carry the initial roleplay utterance explicitly (`roleplay_initial`) instead of inferring it later.
-- The executor debug page should not keep its own separate roleplay prompt/loop if the goal is execution-only debugging; it is cleaner to hand-fill `RoleplayAgentContext` but still run the actual `ExecutionService` / `RoleplayAgent` path.
-- README and other explanatory docs still describe the full Real / Weak Real / Ambiguity model.
-- `planning.py` and `replan.py` are touched by zone-related context and wording, but they are not the primary implementation hotspot.
+- `MemoryService` now owns a dedicated `roleplay_context.json` store and persists a real `RoleplayAgentContext`.
+- `MemoryService.build_roleplay_agent_context()` now starts from the persisted context, then refreshes:
+  - `soul_md` from `CoreMemory`
+  - `plan_context` from current `state.plan.day_blocks`
+- `ExecutionService` and `InteractionService` now both persist their context mutations back into `roleplay_context.json`.
+- `RoleplayAgentContext` now carries:
+  - `context_date`
+  - today’s `entries`
+  - `previous_context_date`
+  - `previous_entries`
+- Day-start planning now rotates the roleplay context:
+  - yesterday’s `entries` move to `previous_entries`
+  - today starts from empty running `entries`
+- `MemoryService.day_start_memory_context()` now prefers `previous_entries` before falling back to active/archive memory.
+- Active/archive memory retrieval is already functional and should remain intact:
+  - retrieval still depends on `active_memory.jsonl` / `archive_memory.jsonl`
+  - interaction retrieval already uses `interaction_partner` priority
+- `JsonFileStore` already exists and is sufficient for `roleplay_context.json`.
+- `PersonaWorkspace` currently exposes:
+  - `core_memory.json`
+  - `active_memory.jsonl`
+  - `archive_memory.jsonl`
+  - `snapshots.jsonl`
+  - `raw_log/`
+  - but not yet `roleplay_context.json`
+- `CoreMemory` has already been narrowed to:
+  - `soul_md`
+  - `stable_facts`
+  - `relationship_conclusions`
+  - `important_conclusions`
+  - `updated_at`
+- The temporary compatibility layer for removed core-memory day fields has already been fully removed.
 
 ## Technical Decisions
 | Decision | Rationale |
 |----------|-----------|
-| Start with impact mapping before touching runtime code | The zone model is used across core types, execution, UI, and docs |
-| Migrate in phases instead of deleting zone concepts all at once | Reduces breakage risk and keeps the repo understandable during refactor |
-| Preserve objective "tool used or not" semantics outside the executor's subjective output | Matches the user's desire to keep executor burden low |
-| Parse legacy zone strings into the new two-zone model instead of trusting all producers to update immediately | Old prompt files, snapshots, and debug payloads may still emit three-zone values during migration |
-| Refactor runtime branching first, then clean prompts/docs/UI in a later pass | The runtime behavior is the real source of truth; wording cleanup should follow the implementation |
-| Keep executor-lab backward-compatible at the request layer while emitting only `real` / `non_real` internally | Avoids breaking manual debug flows during the transition |
+| Persist `RoleplayAgentContext` via `JsonFileStore` | The object is naturally JSON-serializable and should survive restarts |
+| Keep active/archive memory as the retrieval substrate | Day context and retrievable memory serve different purposes |
+| Keep `RoleplayAgentContext.entries` block-based with `kind/content/metadata` | This matches the intended “living stream” semantics and is easy to re-render |
+| Let `build_roleplay_agent_context()` start from persisted context, then refresh `soul_md` and current plan text | Preserves day continuity without freezing prompt rendering |
+| Defer sophisticated planning-query synthesis | The user prefers to validate behavior first and iterate later |
+| Keep retrieved-memory blocks rendered as natural language (`你想起了一些事情：`) while preserving `kind` internally | Keeps immersion without losing debuggability |
 
-## Issues Encountered
-| Issue | Resolution |
-|-------|------------|
-| Existing planning markdown files were large and stale | Replaced them with a fresh file-based plan per user instruction |
-| Prior experiments introduced multiple overlapping debug surfaces | Noted as part of Phase 3 cleanup rather than blocking Phase 1 |
+## Open Questions
+| Question | Current Lean |
+|----------|--------------|
+| How exactly should day-boundary reset happen? | Landed as explicit day-start rotation keyed by date |
+| Should `roleplay_context.json` also store the date it belongs to? | Yes; `context_date` and `previous_context_date` are now part of the persisted structure |
+
+## Latest Adjustment
+- `ReplanService` input semantics were simplified:
+  - keep `now`, `state`, `event`, `outcome`, and retrieved memory context
+  - remove `plan_exhausted` from the service API and prompt
+  - remove prompt-level dependence on `outcome.status`
+- Planner-lab and main plan-lab debug endpoints were aligned to this minimal shape.
+
+## New Task: Proactive Interaction
+- The next runtime feature is proactive outbound interaction initiated from execution.
+- Trigger rule:
+  - if the roleplay side clearly wants to proactively contact someone, execution should stop with the new reason `proactive_interaction`
+  - the handoff payload is minimal: `name`, `message_content`
+- The tuned existing executor prompt must stay untouched; any extra detection prompt must be added separately.
+- Targets should come from a simple registered contact book rather than an open-ended freeform target space.
+- Outbound proactive interaction should reuse the interaction mainline idea, but with the first message authored by the roleplay agent rather than the user.
+
+## Proactive Interaction Findings
+- Added a simple runtime `ContactBook` plus an internal `list_contacts` tool.
+- Inbound interaction now registers the current user into the contact book (`name`, `recipient_id`, `channel`).
+- Execution now uses a separate proactive-interaction detector prompt:
+  - it does not modify the tuned existing executor prompt
+  - it can call `list_contacts`
+  - it returns only `name` + `message_content`
+- Execution loop now supports the new stop reason `proactive_interaction`.
+- `RuntimeOrchestrator` now detects that stop reason after execution and immediately hands off to outbound interaction before replan.
+- `InteractionService` now has two paths:
+  - inbound `execute_interaction(...)`
+  - outbound `execute_outbound_interaction(...)`
+- Outbound interaction writes a natural-language block like:
+  - `你打开了和{partner}的聊天窗口。`
+  - `【渠道】`
+  - `{角色名}: {message}`
 
 ## Resources
+- `app/memory/service.py`
+- `app/runtime/roleplay_context.py`
 - `app/runtime/execution.py`
-- `app/core/types.py`
-- `app/core/state.py`
-- `app/core/outcomes.py`
-- `app/front/executor_lab.py`
-- `app/front_lab_main.py`
-- `README.md`
+- `app/runtime/interaction.py`
+- `app/runtime/planning.py`
+- `app/persona/registry.py`
+- `app/infra/storage.py`
+- `tests/test_memory.py`
+- `tests/test_execution_memory_injection.py`
+- `tests/test_interaction.py`
 
-## Visual/Browser Findings
-- None for this phase.
+## New Task: Standalone Executor-Lab Alignment
+- The standalone execution double-loop debug page should mirror the current execution runtime more closely.
+- The most important mismatches are:
+  - proactive interaction handoff is not surfaced in the page
+  - the standalone contact roster behind `list_contacts` is empty and not user-configurable
+  - the page still carries stale labels and legacy zone semantics from the older runtime
+- The standalone lab should remain execution-focused:
+  - manual `RoleplayAgentContext` input is still desired
+  - planning/replan full-chain state is still out of scope
+  - but the lab must be able to debug the current execution handoff behavior honestly
+
+## Latest Adjustment: Proactive Detection Ownership
+- The previous proactive-interaction implementation used a second dedicated detector agent after each roleplay response.
+- That was semantically off for this project:
+  - proactive handoff judgment should still belong to the executor itself
+  - not to a second auxiliary agent
+- The corrected shape is:
+  - keep the tuned executor prompt body untouched
+  - append a small proactive-output rule to the existing executor prompt
+  - let the executor return optional `name` + `message_content` together with `scene/result/stop`
+  - remove the extra detector-agent pass entirely
+
+## Latest Adjustment: Full Executor History
+- The executor previously only saw:
+  - the previous round's `scene/result`
+  - the latest roleplay reply
+  - core-context text
+- That was too shallow for the intended double-loop semantics.
+- The executor now receives a rendered `executor_history` block that includes all prior rounds' relevant content:
+  - each roleplay reply
+  - each executor-side tool call summary
+  - each executor output's `scene/result/stop`
+  - proactive handoff payload (`name`, `message_content`) when present
+
+## New Task: Interaction Cooldown Termination
+- The user wants interaction termination to be time-based rather than model-judged.
+- Desired behavior:
+  - every inbound user message triggers one roleplay reply
+  - after sending that reply, the role enters a cooldown window
+  - if a new message arrives during cooldown, interaction continues and the cooldown resets
+  - if the cooldown expires with no new message, the runtime should run one normal `replan`
+- The same cooldown rule should also apply after outbound proactive interaction.
+- Default cooldown length should be `3` minutes, but it must be configurable.
+- Implementation should stay minimal:
+  - avoid introducing a separate interaction-session entity unless absolutely necessary
+  - reuse the normal `replan` flow instead of inventing a special post-interaction replan path
+
+## Interaction Cooldown Findings
+- `InteractionService` currently handles:
+  - inbound `execute_interaction(...)`
+  - outbound `execute_outbound_interaction(...)`
+  - but does not manage any waiting/cooldown state
+- `RuntimeOrchestrator` already owns:
+  - event dispatch
+  - wake scheduling via `next_wake_at()`
+  - post-execution replan decisions
+  - so it is the most natural place to absorb cooldown timeout handling
+- `RuntimeState` currently has no interaction-specific fields, so some minimal runtime state extension will be required.
+- The existing runtime already knows how to surface future wake times, which means cooldown expiry can likely piggyback on the same scheduler-facing wake mechanism instead of needing a new standalone scheduler.
+
+## Interaction Cooldown Implementation Findings
+- The leanest workable runtime shape still needed a small amount of persisted cooldown state:
+  - `interaction_cooldown_until`
+  - `interaction_cooldown_context`
+  - `interaction_cooldown_resume_after_completion`
+- A single deadline was not enough:
+  - timeout-triggered `replan` still needs some outcome-like context
+  - proactive outbound interaction also needs to remember whether the underlying execution step had already exhausted the current plan
+- The cleanest scheduling behavior is:
+  - pending events still win first
+  - day-start planning still wins before cooldown timeout if the date rolled over
+  - otherwise an active cooldown blocks due execution steps/blocks until expiry
+- Cooldown expiry can reuse `EventType.SCHEDULE_WAKE` with a timer-source payload:
+  - no new event entity was necessary
+  - the timeout reason is carried in `payload["reason"] == "interaction_cooldown_expired"`
+- Inbound interaction no longer runs immediate replan decision/apply logic.
+- Proactive outbound interaction also no longer re-enters the execution/replan path immediately; it first opens the same waiting window as inbound chat.
+
+## New Task: Integrated Frontend Workspace
+- The next task is to replace the current product-facing entry page with a real integrated frontend.
+- Desired navigation shape:
+  - `角色`
+  - `工作台`
+  - `聊天`
+  - `设置`
+- Desired section responsibilities:
+  - `角色`: create/delete/activate personas and edit `soul.md`
+  - `工作台`: show active persona, runtime state, virtual time controls, day plan, and per-plan execution details
+  - `聊天`: show inbound/outbound messages and allow sending user messages to the active role
+  - `设置`: show tool status / MCP status
+- Debug information should not live on a separate product page; it should stay folded by default inside the relevant UI sections.
+
+## Integrated Frontend Findings
+- The current product-facing front entry in `app/main.py` still serves the standalone executor-lab page.
+- The main reusable frontend assets today are:
+  - `app/front/pages/executor-lab-standalone.html`
+  - `app/front/assets/executor-lab-standalone.js`
+  - `app/front/pages/planner-lab-standalone.html`
+  - `app/front/assets/planner-lab-standalone.js`
+- The existing API surface already covers most of the first integrated frontend:
+  - persona CRUD / activation / soul update
+  - message sending
+  - runtime state
+  - runtime debug
+  - runtime clock controls
+  - memory inspection
+  - tool debug
+- There is no dedicated product-facing conversation-feed endpoint yet.
+- `CommunicationHub` is only an in-memory outbox drain for immediate responses, not a persistent chat history store.
+- The most practical first chat-feed source is therefore a derived view from persisted interaction-related runtime/memory data rather than a new conversation entity.
+
+## Integrated Frontend Implementation Findings
+- The cleanest integrated frontend shape was:
+  - a new `workspace.html` / `workspace.css` / `workspace.js`
+  - keep `/front/debug` and `/front/executor-lab` intact for engineering use
+  - switch `/` and `/front/workspace` to the new integrated page
+- Two thin aggregated APIs were enough to keep the frontend simple without inventing new domain entities:
+  - `/api/workspace/workbench`
+  - `/api/workspace/chat`
+- The workbench endpoint now packages:
+  - runtime summary
+  - raw runtime state
+  - current plan
+  - latest execution / latest replan
+  - plan items with attached execution records
+- The chat endpoint now packages:
+  - a derived message feed from persisted `RoleplayAgentContext.entries`
+  - roleplay-context preview for folded debugging
+- The first integrated workbench uses polling rather than a new product-facing stream endpoint.
+- The first integrated chat view is intentionally single-stream:
+  - no multi-thread conversation list
+  - no separate conversation entity
+  - just the current persisted interaction flow around the active role

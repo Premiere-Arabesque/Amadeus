@@ -15,7 +15,7 @@ from app.core.state import (
     PlanStep,
     RuntimeState,
 )
-from app.core.types import ExecutionMode, ExecutionZone, JsonValue
+from app.core.types import ExecutionGranularity, ExecutionMode, ExecutionZone, JsonValue
 from app.infra.model_client import ModelClient, ModelRouter, StructuredResponse
 from app.infra.settings import ModelRole
 
@@ -61,11 +61,13 @@ class PlanningService:
         model_router: ModelRouter | None = None,
         memory_service: object | None = None,
         prompt_store: object | None = None,
+        execution_granularity: ExecutionGranularity = ExecutionGranularity.MINUTE,
     ) -> None:
         del prompt_store
         self.model_client = model_client
         self.model_router = model_router
         self.memory_service = memory_service
+        self.execution_granularity = execution_granularity
 
     # 这里刻意把所有 prompt 构造函数放在文件前面，方便集中调整。
     # 总原则是：稳定的角色设定和输出格式要求放进 system prompt；
@@ -263,6 +265,8 @@ class PlanningService:
     ) -> PlanState:
         advanced = self._advance_existing_layers(state, now=now)
         if advanced is not None:
+            if self.execution_granularity == ExecutionGranularity.HOUR:
+                return advanced
             expanded = await self.expand_ready_block(
                 state.model_copy(update={"plan": advanced}, deep=True),
                 trigger_event=RuntimeEvent(
@@ -289,6 +293,26 @@ class PlanningService:
             "Execution completed, but no model-backed continuation plan could be produced."
         )
 
+    async def sync_plan_to_time(
+        self,
+        state: RuntimeState,
+        *,
+        now: datetime,
+    ) -> PlanState:
+        plan = state.plan.model_copy(deep=True)
+        previous_active_block_id = plan.active_block_id
+        self._normalize_day_blocks(plan, now=now)
+        active_block_changed = plan.active_block_id != previous_active_block_id
+
+        if self.execution_granularity == ExecutionGranularity.HOUR:
+            plan.minute_steps = []
+            self._sync_outline_from_blocks(plan)
+            return plan
+
+        if active_block_changed:
+            plan.minute_steps = []
+        return plan
+
     async def replan_after_completion(
         self,
         state: RuntimeState,
@@ -302,7 +326,14 @@ class PlanningService:
         if kind == ReplanKind.NO_REPLAN:
             return state.plan.model_copy(deep=True)
 
-        if kind == ReplanKind.HOUR_REPLAN:
+        effective_kind = (
+            ReplanKind.HOUR_REPLAN
+            if self.execution_granularity == ExecutionGranularity.HOUR
+            and kind == ReplanKind.MICRO_REPLAN
+            else kind
+        )
+
+        if effective_kind == ReplanKind.HOUR_REPLAN:
             return await self._plan_hour_replan_with_model(
                 state,
                 now=now,
@@ -313,7 +344,7 @@ class PlanningService:
         model_plan = await self._plan_replan_with_model(
             state=state,
             now=now,
-            kind=kind,
+            kind=effective_kind,
             reason=reason,
             event=event,
             outcome=outcome,
@@ -321,7 +352,7 @@ class PlanningService:
         if model_plan is None:
             raise RuntimeError(
                 "Replanning was requested with kind "
-                f"`{kind.value}`, but no model-backed plan was produced."
+                f"`{effective_kind.value}`, but no model-backed plan was produced."
             )
         return model_plan
 
@@ -332,6 +363,7 @@ class PlanningService:
         *,
         now: datetime,
     ) -> PlanState | None:
+        self._rotate_roleplay_context_for_day(now=now)
         self._decision_route_or_raise(purpose="day-start planning")
 
         system_prompt = self._build_day_start_system_prompt(state=state)
@@ -361,14 +393,18 @@ class PlanningService:
             raise RuntimeError("Model-backed day-start planning failed.") from exc
 
         plan = self._day_plan_draft_to_plan_state(response.structured.items, now=now)
-        expanded = await self._expand_ready_block_with_model(
-            state=state,
-            plan=plan,
-            now=now,
-            trigger_event=trigger_event,
-            force=False,
-        )
-        final_plan = expanded or plan
+        if self.execution_granularity == ExecutionGranularity.HOUR:
+            final_plan = plan
+            expanded = None
+        else:
+            expanded = await self._expand_ready_block_with_model(
+                state=state,
+                plan=plan,
+                now=now,
+                trigger_event=trigger_event,
+                force=False,
+            )
+            final_plan = expanded or plan
         self._record_model_trace(
             PlanningModelTrace(
                 scope=f"day_blocks:{trigger_event.event_type.value}",
@@ -385,6 +421,11 @@ class PlanningService:
         )
         return final_plan
 
+    def _rotate_roleplay_context_for_day(self, *, now: datetime) -> None:
+        rotator = getattr(self.memory_service, "rotate_roleplay_agent_context_for_day", None)
+        if callable(rotator):
+            rotator(target_date=now.date().isoformat())
+
     async def expand_ready_block(
         self,
         state: RuntimeState,
@@ -398,6 +439,14 @@ class PlanningService:
         self._normalize_day_blocks(plan, now=now)
         if not plan.day_blocks:
             return None
+        if self.execution_granularity == ExecutionGranularity.HOUR:
+            candidate = self._expandable_day_block(plan, now=now, force=force)
+            if candidate is None:
+                return None
+            self._set_active_block(plan, candidate.block_id)
+            plan.minute_steps = []
+            self._sync_outline_from_blocks(plan)
+            return plan
 
         expanded = await self._expand_ready_block_with_model(
             state=state,
@@ -431,11 +480,10 @@ class PlanningService:
 
         # 切换到指定时间块时，先丢弃旧分钟窗口，避免仍被上一次展开结果占住。
         plan.minute_steps = []
-        plan.current_hour_summary = ""
-        plan.hour_plan_items = []
-        plan.active_hour_item_id = None
-        plan.hour_starts_at = None
         self._set_active_block(plan, block_id)
+        if self.execution_granularity == ExecutionGranularity.HOUR:
+            self._sync_outline_from_blocks(plan)
+            return plan
 
         state_for_expand = state.model_copy(deep=True)
         state_for_expand.plan = plan
@@ -624,15 +672,18 @@ class PlanningService:
             now=now,
             replacement_blocks=replacement_blocks,
         )
-        expanded = await self._expand_ready_block_with_model(
-            state=state,
-            plan=plan,
-            now=now,
-            trigger_event=trigger_event,
-            force=True,
-            reason=reason,
-        )
-        final_plan = expanded or plan
+        if self.execution_granularity == ExecutionGranularity.HOUR:
+            final_plan = plan
+        else:
+            expanded = await self._expand_ready_block_with_model(
+                state=state,
+                plan=plan,
+                now=now,
+                trigger_event=trigger_event,
+                force=True,
+                reason=reason,
+            )
+            final_plan = expanded or plan
         self._record_model_trace(
             PlanningModelTrace(
                 scope="hour_replan",
@@ -701,10 +752,6 @@ class PlanningService:
         ]
         replanned.plan_date = now.date().isoformat()
         replanned.minute_steps = []
-        replanned.current_hour_summary = ""
-        replanned.hour_plan_items = []
-        replanned.active_hour_item_id = None
-        replanned.hour_starts_at = None
         replanned.active_block_id = None
         self._normalize_day_blocks(replanned, now=now)
         return replanned
@@ -717,10 +764,6 @@ class PlanningService:
         self._complete_active_day_block(plan, now=now)
         self._normalize_day_blocks(plan, now=now)
         plan.minute_steps = []
-        plan.current_hour_summary = ""
-        plan.hour_plan_items = []
-        plan.active_hour_item_id = None
-        plan.hour_starts_at = None
         return plan
 
     def _plan_with_expanded_block(
@@ -743,11 +786,6 @@ class PlanningService:
         expanded.plan_date = now.date().isoformat()
         expanded.day_summary = self._summarize_day_blocks(expanded.day_blocks)
         expanded.minute_steps = minute_steps
-        expanded.current_hour_summary = block.label
-        expanded.hour_plan_items = [PlanOutlineItem(item_id=block.block_id, summary=block.label)]
-        expanded.hour_plan_items[0].status = PlanOutlineStatus.ACTIVE
-        expanded.active_hour_item_id = block.block_id
-        expanded.hour_starts_at = now.isoformat()
         self._sync_outline_from_blocks(expanded)
         return expanded
 
@@ -820,30 +858,13 @@ class PlanningService:
         plan.active_block_id = active_id
         plan.day_summary = self._summarize_day_blocks(plan.day_blocks)
         self._sync_outline_from_blocks(plan)
-        if plan.active_block_id is None:
-            plan.current_hour_summary = ""
-            plan.hour_plan_items = []
-            plan.active_hour_item_id = None
 
     def _bootstrap_day_blocks_from_legacy_plan(self, plan: PlanState, *, now: datetime) -> None:
         labels: list[str] = []
         status_by_label: dict[str, PlanOutlineStatus] = {}
         active_label: str | None = None
 
-        if plan.hour_plan_items:
-            for item in plan.hour_plan_items:
-                if item.summary.strip():
-                    labels.append(item.summary.strip())
-                    status_by_label[item.summary.strip()] = item.status
-                    if (
-                        item.item_id == plan.active_hour_item_id
-                        or item.status == PlanOutlineStatus.ACTIVE
-                    ):
-                        active_label = item.summary.strip()
-        elif plan.current_hour_summary.strip():
-            labels.append(plan.current_hour_summary.strip())
-            active_label = plan.current_hour_summary.strip()
-        elif plan.day_plan_items:
+        if plan.day_plan_items:
             for item in plan.day_plan_items:
                 if item.summary.strip():
                     labels.append(item.summary.strip())

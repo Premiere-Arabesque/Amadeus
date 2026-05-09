@@ -14,12 +14,31 @@ class ToolSourceType(StrEnum):
     MCP = "mcp"
 
 
+class ToolCollectionType(StrEnum):
+    SINGLE = "single"
+    TOOLSET = "toolset"
+    MCP_SERVER = "mcp_server"
+
+
+class ToolCollectionSpec(BaseModel):
+    collection_id: str
+    name: str
+    description: str = ""
+    collection_type: ToolCollectionType = ToolCollectionType.SINGLE
+    source_type: ToolSourceType = ToolSourceType.INTERNAL
+    source_id: str = ""
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+
+
 class ToolSpec(BaseModel):
     name: str
     description: str
     required_arguments: list[str] = Field(default_factory=list)
     source_type: ToolSourceType = ToolSourceType.INTERNAL
     source_id: str = ""
+    collection_id: str = ""
+    collection_name: str = ""
+    collection_type: ToolCollectionType = ToolCollectionType.SINGLE
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
 

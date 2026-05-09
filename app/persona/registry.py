@@ -46,6 +46,10 @@ class PersonaWorkspace:
         return self.directory / "core_memory.json"
 
     @property
+    def roleplay_context_path(self) -> Path:
+        return self.directory / "roleplay_context.json"
+
+    @property
     def active_memory_path(self) -> Path:
         return self.directory / "active_memory.jsonl"
 

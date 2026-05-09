@@ -71,14 +71,15 @@ def build_runtime_snapshot(
         ),
         None,
     )
-    active_hour_summary = next(
+    active_block = next(
         (
-            item.summary
-            for item in state.plan.hour_plan_items
-            if item.item_id == state.plan.active_hour_item_id
+            block
+            for block in state.plan.day_blocks
+            if block.block_id == state.plan.active_block_id
         ),
-        state.plan.current_hour_summary or None,
+        None,
     )
+    active_hour_summary = active_block.label if active_block is not None else None
     server_status = _mcp_server_status(mcp_provider)
     return RuntimeStateSnapshot(
         current_time=now.isoformat(),
